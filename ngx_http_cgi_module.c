@@ -13,6 +13,12 @@
 #define CHILD_PROCESS_VFORK_ERROR 1
 #define CHILD_PROCESS_EXEC_ERROR  2
 
+#define PIPE_READ_END 0
+#define PIPE_WRITE_END 1
+
+
+typedef int pipe_pair_t[2];
+
 
 typedef struct {
     ngx_flag_t enabled;
@@ -22,9 +28,10 @@ typedef struct {
 typedef struct {
     ngx_http_request_t *r;
     ngx_str_t           script;
-    // ngx_connection_t child_stdin;
-    // ngx_connection_t child_stdout;
-    // ngx_connection_t child_stderr;
+    pipe_pair_t         pipe_stdout;
+    // ngx_connection_t    c_stdin;
+    ngx_connection_t   *c_stdout;
+    // ngx_connection_t    c_stderr;
 } ngx_http_cgi_ctx_t;
 
 
@@ -83,13 +90,53 @@ ngx_module_t  ngx_http_cgi_module = {
 };
 
 
-static ngx_str_t  ngx_http_hello_world_text = ngx_string("Hello, world!\n");
+static void
+ngx_http_cgi_ctx_cleanup(void *data) {
+    ngx_http_cgi_ctx_t *ctx = data;
+    if (ctx->pipe_stdout[0] != -1) {
+        close(ctx->pipe_stdout[0]);
+    }
+    if (ctx->pipe_stdout[1] != -1) {
+        close(ctx->pipe_stdout[1]);
+    }
+    if (ctx->c_stdout && !ctx->c_stdout->close) {
+        ngx_close_connection(ctx->c_stdout);
+    }
+}
+
+
+static ngx_http_cgi_ctx_t *
+ngx_http_cgi_ctx_create(ngx_pool_t *pool) {
+    ngx_http_cgi_ctx_t *ctx;
+    ngx_pool_cleanup_t *cln;
+
+    cln = ngx_pool_cleanup_add(pool, sizeof(ngx_http_cgi_module_ctx));
+    if (cln == NULL) {
+        return NULL;
+    }
+
+    ctx = cln->data;
+    ngx_memzero(ctx, sizeof(ngx_http_cgi_module_ctx));
+
+    cln->handler = ngx_http_cgi_ctx_cleanup;
+
+    ctx->pipe_stdout[0] = -1;
+    ctx->pipe_stdout[1] = -1;
+
+    return ctx;
+}
 
 
 static int ngx_http_cgi_child_proc(void *arg) {
     ngx_http_cgi_ctx_t *ctx = arg;
     char *child_argv[] = {NULL};
     pid_t pid;
+
+    close(0);
+    close(1);
+    close(2);
+    dup2(ctx->pipe_stdout[PIPE_WRITE_END], 1);
+    close(ctx->pipe_stdout[PIPE_READ_END]);
 
     // fork again to detch
     pid = vfork();
@@ -115,58 +162,161 @@ static int ngx_http_cgi_child_proc(void *arg) {
 
 static ngx_int_t
 ngx_http_cgi_spawn_child_process(ngx_http_cgi_ctx_t *ctx) {
-    char *stack;
-    pid_t child_pid;
+    char *stack = NULL;
+    pid_t child_pid = 0;
     int wstatus = 0;
+    ngx_int_t rc = NGX_OK;
+
+    if (pipe(ctx->pipe_stdout) == -1) {
+        ngx_log_error(NGX_LOG_ERR, ctx->r->connection->log, ngx_errno, "pipe");
+        rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+        goto cleanup;
+    }
 
     stack = malloc(STACK_SIZE);
+    if (!stack) {
+        ngx_log_error(NGX_LOG_ERR, ctx->r->connection->log, ngx_errno,
+                     "malloc");
+        rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+        goto cleanup;
+    }
+
     // use clone instead of fork/vfork to avoid SIGCHLD be sent to nginx here
     child_pid = clone(ngx_http_cgi_child_proc, stack + STACK_SIZE,
                            CLONE_VM | CLONE_VFORK, ctx);
     if (child_pid == -1) {
         ngx_log_error(NGX_LOG_ERR, ctx->r->connection->log, ngx_errno,
                       "run cgi \"%V\" failed", &ctx->script);
-        free(stack);
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+        goto cleanup;
     }
 
-    free(stack);
     // child process will exit immediately after forking grandson
     //  __WCLONE is required to wait cloned process
     if (waitpid(child_pid, &wstatus, __WCLONE) == -1) {
         ngx_log_error(NGX_LOG_ERR, ctx->r->connection->log, ngx_errno,
                       "failed to clean child process");
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+        goto cleanup;
     }
 
-    switch (WEXITSTATUS(wstatus)) {
-    case 0:
-        return NGX_OK;
-
-    case CHILD_PROCESS_VFORK_ERROR:
-        ngx_log_error(NGX_LOG_ERR, ctx->r->connection->log, 0,
-                      "spawn process vfork failed");
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
-
-    case CHILD_PROCESS_EXEC_ERROR:
-        ngx_log_error(NGX_LOG_ERR, ctx->r->connection->log, 0,
-                      "spawn process exec failed");
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
-
-    default:
-        ngx_log_error(NGX_LOG_ERR, ctx->r->connection->log, 0,
-                      "spawn process unknown error");
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    if (WEXITSTATUS(wstatus) != 0) {
+        switch (WEXITSTATUS(wstatus)) {
+        case CHILD_PROCESS_VFORK_ERROR:
+            ngx_log_error(NGX_LOG_ERR, ctx->r->connection->log, 0,
+                        "spawn process vfork failed");
+            break;
+        case CHILD_PROCESS_EXEC_ERROR:
+            ngx_log_error(NGX_LOG_ERR, ctx->r->connection->log, 0,
+                        "spawn process exec failed");
+            break;
+        default:
+            ngx_log_error(NGX_LOG_ERR, ctx->r->connection->log, 0,
+                        "spawn process unknown error");
+            break;
+        }
+        rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+        goto cleanup;
     }
+
+    close(ctx->pipe_stdout[PIPE_WRITE_END]);
+    ctx->pipe_stdout[PIPE_WRITE_END] = -1;
+
+cleanup:
+    if (stack) {
+        free(stack);
+    }
+    return rc;
+}
+
+
+static void
+ngx_http_cgi_stdout_data_handler(ngx_event_t *ev) {
+    ngx_connection_t   *c = ev->data;
+    ngx_http_cgi_ctx_t *ctx = c->data;
+    ngx_http_request_t *r = ctx->r;
+    ngx_buf_t          *tmp;
+    ngx_chain_t        *head = NULL;
+    ngx_chain_t        *tail = NULL;
+    ngx_int_t           rc = NGX_OK;
+
+    char buf[65536];
+    int nread;
+
+    for (;;) {
+        nread = read(c->fd, buf, sizeof(buf));
+        if (nread > 0) {
+            tmp = ngx_create_temp_buf(r->pool, nread);
+            if (tmp == NULL) {
+                rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+                goto error;
+            }
+
+            tmp->last = ngx_cpymem(tmp->pos, buf, nread);
+            tmp->flush = 1;
+
+            if (tail) {
+                tail->next = ngx_alloc_chain_link(r->pool);
+                tail = tail->next;
+            } else {
+                head = tail = ngx_alloc_chain_link(r->pool);
+            }
+            if (!tail) {
+                rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+                goto error;
+            }
+
+            tail->buf = tmp;
+            tail->next = NULL;
+        } else if (nread == 0) {
+            // end of file
+            if (!tail) {
+                // alloc an empty buf, if there's nothing remain
+                head = tail = ngx_alloc_chain_link(r->pool);
+                tmp = ngx_calloc_buf(r->pool);
+                if (tmp == NULL) {
+                    rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+                    goto error;
+                }
+                tail->buf = tmp;
+                tail->next = NULL;
+            }
+            tail->buf->last_in_chain = 1;
+            tail->buf->last_buf = 1;
+            ngx_http_finalize_request(r, ngx_http_output_filter(r, head));
+            return;
+        } else {
+            if (ngx_errno == EAGAIN) {
+                // wait for more data
+                if (tail) {
+                    tail->buf->last_in_chain = 1;
+                    rc = ngx_http_output_filter(r, head);
+                    if (rc == NGX_ERROR || rc > NGX_OK) {
+                        goto error;
+                    }
+                }
+                rc = ngx_handle_read_event(ctx->c_stdout->read, 0);
+                if (rc == NGX_ERROR || rc > NGX_OK) {
+                    goto error;
+                }
+                return;
+            } else {
+                rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+                goto error;
+            }
+        }
+    }
+
+error:
+    ngx_http_finalize_request(r, rc);
+    return;
 }
 
 
 static ngx_int_t
 ngx_http_cgi_handler(ngx_http_request_t *r)
 {
-    ngx_buf_t                 *b;
     ngx_int_t                  rc;
-    ngx_chain_t                out;
     ngx_http_core_loc_conf_t  *clcf;
     ngx_http_cgi_ctx_t        *ctx;
     size_t                     strip_prefix;
@@ -182,10 +332,11 @@ ngx_http_cgi_handler(ngx_http_request_t *r)
 
     ctx = ngx_http_get_module_ctx(r, ngx_http_cgi_module);
     if (ctx == NULL) {
-        ctx = ngx_pcalloc(r->pool, sizeof(ngx_http_cgi_module_ctx));
+        ctx = ngx_http_cgi_ctx_create(r->pool);
         if (ctx == NULL) {
             return NGX_HTTP_INTERNAL_SERVER_ERROR;
         }
+        ngx_http_set_ctx(r, ctx, ngx_http_cgi_module);
     }
 
     ctx->r = r;
@@ -263,23 +414,32 @@ ngx_http_cgi_handler(ngx_http_request_t *r)
         return rc;
     }
 
-    /* send body */
-
-    b = ngx_calloc_buf(r->pool);
-    if (b == NULL) {
-        return NGX_ERROR;
+    if (ngx_nonblocking(ctx->pipe_stdout[PIPE_READ_END]) == -1) {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
+                "ngx_nonblocking");
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+    ctx->c_stdout = ngx_get_connection(ctx->pipe_stdout[PIPE_READ_END],
+                                       r->connection->log);
+    if (ctx->c_stdout) {
+        ctx->pipe_stdout[PIPE_READ_END] = -1;
+    } else {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
+                "ngx_get_connection");
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
-    b->pos = ngx_http_hello_world_text.data;
-    b->last = ngx_http_hello_world_text.data + ngx_http_hello_world_text.len;
-    b->memory = 1;
-    b->last_buf = (r == r->main) ? 1 : 0;
-    b->last_in_chain = 1;
+    ctx->c_stdout->data = ctx;
+    ctx->c_stdout->type = SOCK_STREAM;
 
-    out.buf = b;
-    out.next = NULL;
+    ctx->c_stdout->read->handler = ngx_http_cgi_stdout_data_handler;
+    ctx->c_stdout->read->log = r->connection->log;
+    if (ngx_handle_read_event(ctx->c_stdout->read, 0) != NGX_OK) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
 
-    return ngx_http_output_filter(r, &out);
+    r->main->count += 1;
+    return NGX_DONE;
 }
 
 
