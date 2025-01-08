@@ -29,6 +29,11 @@ static ngx_command_t  ngx_http_cgi_commands[] = {
       offsetof(ngx_http_cgi_loc_conf_t, enabled),
       NULL },
 
+    // TODO: add following symbolic link?
+    // TODO: add cgi_interpreter
+    // TODO: add cgi_x_only
+    // TODO: add cgi_index to generate content for directory?
+
       ngx_null_command
 };
 
@@ -76,6 +81,7 @@ ngx_http_cgi_handler(ngx_http_request_t *r)
     ngx_http_core_loc_conf_t  *clcf;
     ngx_str_t                  spath;
     size_t                     strip_prefix;
+    ngx_file_info_t            script_info;
 
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "http cgi handler");
@@ -109,8 +115,36 @@ ngx_http_cgi_handler(ngx_http_request_t *r)
     memcpy(spath.data + spath.len, r->uri.data + strip_prefix, r->uri.len - strip_prefix);
     spath.len += r->uri.len - strip_prefix;
 
+    // convert string to c string
+    spath.data[spath.len] = 0;
+
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "script path: %V", &spath);
+
+    if (ngx_file_info(spath.data, &script_info) == -1) {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
+                      "run cgi \"%V\" failed", &spath);
+        if (ngx_errno == EACCES) {
+            return NGX_HTTP_FORBIDDEN;
+        }
+        if (ngx_errno == ENOENT) {
+            return NGX_HTTP_NOT_FOUND;
+        }
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    if (!ngx_is_file(&script_info)) {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                "run cgi \"%V\" failed, not regular file", &spath);
+        return NGX_HTTP_NOT_FOUND;
+    }
+
+    if (access((char*)spath.data, X_OK) != 0) {
+        // no execute permission
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                "run cgi \"%V\" failed, no x permission", &spath);
+        return NGX_HTTP_FORBIDDEN;
+    }
 
     /* ignore client request body if any */
     if (ngx_http_discard_request_body(r) != NGX_OK) {
