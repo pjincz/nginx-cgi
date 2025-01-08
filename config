@@ -1,6 +1,6 @@
 ngx_module_type=HTTP
-ngx_addon_name=hello_world
-ngx_module_name=ngx_http_hello_world_module
-ngx_module_srcs="$ngx_addon_dir/ngx_http_hello_world_module.c"
+ngx_addon_name=cgi
+ngx_module_name=ngx_http_cgi_module
+ngx_module_srcs="$ngx_addon_dir/ngx_http_cgi_module.c"
 
 . auto/module
