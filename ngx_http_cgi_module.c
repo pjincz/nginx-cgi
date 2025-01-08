@@ -70,15 +70,49 @@ static ngx_str_t  ngx_http_hello_world_text = ngx_string("Hello, world!\n");
 static ngx_int_t
 ngx_http_cgi_handler(ngx_http_request_t *r)
 {
-    ngx_buf_t    *b;
-    ngx_int_t     rc;
-    ngx_chain_t   out;
+    ngx_buf_t                 *b;
+    ngx_int_t                  rc;
+    ngx_chain_t                out;
+    ngx_http_core_loc_conf_t  *clcf;
+    ngx_str_t                  spath;
+    size_t                     strip_prefix;
 
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "http cgi handler");
 
-    /* ignore client request body if any */
+    clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
+    ngx_log_debug3(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                   "uri: %V, alias: %d, root: %V", &r->uri,
+                   clcf->alias, &clcf->root);
 
+    spath.data = ngx_palloc(r->pool, clcf->root.len + 1 + r->uri.len + 1);
+    ngx_memcpy(spath.data, clcf->root.data, clcf->root.len);
+    spath.len = clcf->root.len;
+
+    // append a tail / here, if clcf->root doesn't contains one
+    if (spath.data[spath.len - 1] != '/') {
+        spath.data[spath.len] = '/';
+        spath.len += 1;
+    }
+
+    strip_prefix = clcf->alias;
+    if (strip_prefix > r->uri.len) {
+        // this should not happens
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+    // remove leading /s in uri
+    while (r->uri.data[strip_prefix] == '/') {
+        strip_prefix += 1;
+    }
+
+    // append uri to script path
+    memcpy(spath.data + spath.len, r->uri.data + strip_prefix, r->uri.len - strip_prefix);
+    spath.len += r->uri.len - strip_prefix;
+
+    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                   "script path: %V", &spath);
+
+    /* ignore client request body if any */
     if (ngx_http_discard_request_body(r) != NGX_OK) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
@@ -142,6 +176,9 @@ ngx_http_cgi_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
         ngx_http_core_loc_conf_t  *clcf;
 
         clcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
+
+        // TODO: stop `location /cgi-bin` be set here, it will be a security
+        // vulnerability
 
         clcf->handler = ngx_http_cgi_handler;
     }
