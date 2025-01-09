@@ -54,6 +54,7 @@ typedef struct {
     ngx_buf_t                      header_buf;
     ngx_http_cgi_header_scan_t     header_scan;
     ngx_flag_t                     header_ready;
+    ngx_flag_t                     header_sent;
 
     ngx_chain_t                   *cache;  // body sending cache
     ngx_chain_t                   *cache_tail;  // body sending cache
@@ -79,6 +80,7 @@ static ngx_command_t  ngx_http_cgi_commands[] = {
     // TODO: add cgi_interpreter
     // TODO: add cgi_x_only
     // TODO: add cgi_index to generate content for directory?
+    // TODO: add cgi_detailed_error_page?
 
       ngx_null_command
 };
@@ -611,6 +613,7 @@ static ngx_int_t
 ngx_http_cgi_add_output(ngx_http_cgi_ctx_t *ctx,
                         u_char *buf, u_char *buf_end) {
     ngx_int_t rc;
+    ngx_str_t str;
 
     if (buf_end == buf) {
         return NGX_OK;
@@ -621,6 +624,9 @@ ngx_http_cgi_add_output(ngx_http_cgi_ctx_t *ctx,
         ctx->header_scan.end = buf_end;
         for (;;) {
             rc = ngx_http_cgi_scan_header_line(&ctx->header_scan, 0);
+            if (ctx->header_scan.invalid_header) {
+                rc = NGX_HTTP_PARSE_INVALID_HEADER;
+            }
             if (rc == NGX_AGAIN) {
                 // we need more data, append current buf to header buf
                 // and wait more
@@ -651,6 +657,13 @@ ngx_http_cgi_add_output(ngx_http_cgi_ctx_t *ctx,
                         ctx,
                         ctx->header_scan.pos,
                         buf_end);
+            } else if (rc == NGX_HTTP_PARSE_INVALID_HEADER) {
+                str.data = ctx->header_scan.header_name_start;
+                str.len = ctx->header_scan.header_end -
+                          ctx->header_scan.header_name_start;
+                ngx_log_error(NGX_LOG_ERR, ctx->r->connection->log, 0,
+                      "cgi invalid header: %V", &str);
+                return NGX_HTTP_INTERNAL_SERVER_ERROR;
             } else {
                 return rc;
             }
@@ -665,6 +678,7 @@ static ngx_int_t
 ngx_http_cgi_flush(ngx_http_cgi_ctx_t *ctx, ngx_flag_t eof) {
     ngx_buf_t   *tmp;
     ngx_chain_t *it;
+    ngx_int_t    rc;
 
     if (eof && !ctx->cache) {
         // alloc an empty buf, if there's nothing remain
@@ -679,6 +693,16 @@ ngx_http_cgi_flush(ngx_http_cgi_ctx_t *ctx, ngx_flag_t eof) {
 
     if (!ctx->cache) {
         return NGX_OK;
+    }
+
+    if (!ctx->header_sent) {
+        // TODO: generate real response header
+        ctx->r->headers_out.status = NGX_HTTP_OK;
+        rc = ngx_http_send_header(ctx->r);
+        if (rc == NGX_ERROR || rc > NGX_OK || ctx->r->header_only) {
+            return rc;
+        }
+        ctx->header_sent = 1;
     }
 
     ctx->cache_tail->buf->last_in_chain = 1;
@@ -825,13 +849,6 @@ ngx_http_cgi_handler(ngx_http_request_t *r)
     // TODO: grab request body, and sent to CGI script
     if (ngx_http_discard_request_body(r) != NGX_OK) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
-    }
-
-    // TODO: send real CGI header response
-    r->headers_out.status = NGX_HTTP_OK;
-    rc = ngx_http_send_header(r);
-    if (rc == NGX_ERROR || rc > NGX_OK || r->header_only) {
-        return rc;
     }
 
     rc = ngx_http_cgi_spawn_child_process(ctx);
