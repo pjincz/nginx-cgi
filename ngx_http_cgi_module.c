@@ -56,6 +56,7 @@ typedef struct {
     ngx_flag_t                     header_ready;
     ngx_flag_t                     header_sent;
 
+    ngx_flag_t                     has_body;
     ngx_chain_t                   *cache;  // body sending cache
     ngx_chain_t                   *cache_tail;  // body sending cache
 } ngx_http_cgi_ctx_t;
@@ -528,9 +529,115 @@ header_done:
 }
 
 
+#define _strieq(str, exp) \
+    (ngx_strncasecmp((str).data, (u_char*)(exp), (str).len) == 0)
+
+
 static ngx_int_t
 ngx_http_cgi_scan_header(ngx_http_cgi_ctx_t *ctx) {
-    // TODO: impl this
+    ngx_http_cgi_header_scan_t *scan = &ctx->header_scan;
+    ngx_http_request_t         *r = ctx->r;
+    ngx_int_t                   rc;
+    ngx_str_t                   name;
+    ngx_str_t                   line;
+    ngx_table_elt_t            *h;
+
+    // reset scaning ctx, and scan again
+    ngx_memzero(scan, sizeof(*scan));
+    scan->pos = ctx->header_buf.pos;
+    scan->end = ctx->header_buf.end;
+
+    for (;;) {
+        rc = ngx_http_cgi_scan_header_line(scan, 0);
+
+        if (rc == NGX_OK) {
+            name.data = scan->header_name_start;
+            name.len = scan->header_name_end - scan->header_name_start;
+            line.data = scan->header_name_start;
+            line.len = scan->header_end - scan->header_name_start;
+
+            if (_strieq(name, "Keep-Alive") ||
+                _strieq(name, "Transfer-Encoding") ||
+                _strieq(name, "TE") ||
+                _strieq(name, "Connection") ||
+                _strieq(name, "Trailer") ||
+                _strieq(name, "Upgrade")) {
+                ngx_log_error(NGX_LOG_ERR, ctx->r->connection->log, 0,
+                        "hop-by-hop header is not avalid in cgi response: %V",
+                        &line);
+                return NGX_HTTP_INTERNAL_SERVER_ERROR;
+            } else if (_strieq(name, "Status")) {
+                r->headers_out.status_line.len =
+                        scan->header_end - scan->header_start;
+                r->headers_out.status_line.data = ngx_palloc(
+                        r->pool, r->headers_out.status_line.len);
+                if (r->headers_out.status_line.data == NULL) {
+                    return NGX_HTTP_INTERNAL_SERVER_ERROR;
+                }
+                ngx_memcpy(r->headers_out.status_line.data, scan->header_start,
+                        r->headers_out.status_line.len);
+                ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                            "cgi status line: \"%V\"",
+                            &r->headers_out.status_line);
+            } else if (_strieq(name, "Content-Length")) {
+                r->headers_out.content_length_n = ngx_atoi(scan->header_start,
+                        scan->header_end - scan->header_start);
+                if (r->headers_out.content_length_n == NGX_ERROR) {
+                    ngx_log_error(NGX_LOG_ERR, ctx->r->connection->log, 0,
+                            "invalid cgi head line: %V", &line);
+                    return NGX_HTTP_INTERNAL_SERVER_ERROR;
+                }
+            } else {
+                // forward other headers
+                h = ngx_list_push(&r->headers_out.headers);
+                if (h == NULL) {
+                    return NGX_HTTP_INTERNAL_SERVER_ERROR;
+                }
+
+                h->hash = scan->header_hash;
+
+                h->key.len = scan->header_name_end - scan->header_name_start;
+                h->value.len = scan->header_end - scan->header_start;
+
+                h->key.data = ngx_pnalloc(r->pool,
+                                h->key.len + 1 + h->value.len + 1 + h->key.len);
+                if (h->key.data == NULL) {
+                    h->hash = 0;
+                    return NGX_ERROR;
+                }
+
+                h->value.data = h->key.data + h->key.len + 1;
+                h->lowcase_key = h->key.data + h->key.len + 1
+                                + h->value.len + 1;
+
+                ngx_memcpy(h->key.data, scan->header_name_start, h->key.len);
+                h->key.data[h->key.len] = '\0';
+                ngx_memcpy(h->value.data, scan->header_start, h->value.len);
+                h->value.data[h->value.len] = '\0';
+
+                if (h->key.len == scan->lowcase_index) {
+                    ngx_memcpy(h->lowcase_key, scan->lowcase_header,
+                            h->key.len);
+                } else {
+                    ngx_strlow(h->lowcase_key, h->key.data, h->key.len);
+                }
+
+                ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                            "http cgi header: \"%V: %V\"",
+                            &h->key, &h->value);
+            }
+        } else if (rc == NGX_HTTP_PARSE_HEADER_DONE) {
+            break;
+        } else {
+            return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        }
+    }
+
+    // default status is 200, if cgi reponse not sepcified one
+    if (r->headers_out.status_line.data == NULL) {
+        r->headers_out.status = 200;
+    }
+    
     ctx->header_ready = 1;
     return NGX_OK;
 }
@@ -605,6 +712,7 @@ ngx_http_cgi_append_body(ngx_http_cgi_ctx_t *ctx, u_char *buf, u_char *buf_end)
 
     ctx->cache_tail->buf = tmp;
     ctx->cache_tail->next = NULL;
+    ctx->has_body = 1;
     return NGX_OK;
 }
 
@@ -612,8 +720,9 @@ ngx_http_cgi_append_body(ngx_http_cgi_ctx_t *ctx, u_char *buf, u_char *buf_end)
 static ngx_int_t
 ngx_http_cgi_add_output(ngx_http_cgi_ctx_t *ctx,
                         u_char *buf, u_char *buf_end) {
-    ngx_int_t rc;
-    ngx_str_t str;
+    ngx_int_t   rc;
+    ngx_str_t   str;
+    u_char     *tmp_ptr;
 
     if (buf_end == buf) {
         return NGX_OK;
@@ -648,15 +757,15 @@ ngx_http_cgi_add_output(ngx_http_cgi_ctx_t *ctx,
                 if (rc != NGX_OK) {
                     return rc;
                 }
+                // ctx will be reset in ngx_http_cgi_scan_header
+                // save ctx->header_scan.pos for later use
+                tmp_ptr = ctx->header_scan.pos;
                 rc = ngx_http_cgi_scan_header(ctx);
                 if (rc != NGX_OK) {
                     return rc;
                 }
                 // move the remain data from header to body
-                return ngx_http_cgi_append_body(
-                        ctx,
-                        ctx->header_scan.pos,
-                        buf_end);
+                return ngx_http_cgi_append_body(ctx, tmp_ptr, buf_end);
             } else if (rc == NGX_HTTP_PARSE_INVALID_HEADER) {
                 str.data = ctx->header_scan.header_name_start;
                 str.len = ctx->header_scan.header_end -
@@ -675,13 +784,48 @@ ngx_http_cgi_add_output(ngx_http_cgi_ctx_t *ctx,
 
 
 static ngx_int_t
+ngx_http_cgi_calc_content_length(ngx_http_cgi_ctx_t *ctx) {
+    ngx_chain_t *it;
+    ngx_int_t    len = 0;
+    
+    for (it = ctx->cache; it; it = it->next) {
+        len += it->buf->end - it->buf->start;
+    }
+
+    return len;
+}
+
+static ngx_int_t
 ngx_http_cgi_flush(ngx_http_cgi_ctx_t *ctx, ngx_flag_t eof) {
     ngx_buf_t   *tmp;
     ngx_chain_t *it;
-    ngx_int_t    rc;
+    ngx_int_t    rc = NGX_OK;
 
-    if (eof && !ctx->cache) {
-        // alloc an empty buf, if there's nothing remain
+    // do nothing, if no pending cache and not finish
+    if (!ctx->cache && !eof) {
+        return NGX_OK;
+    }
+
+    if (!ctx->header_sent) {
+        if (eof) {
+            // we didn't send out header yet, but we reaches the eof
+            // we can caculate the content length directly to avoid chunk mode
+            ctx->r->headers_out.content_length_n = \
+                    ngx_http_cgi_calc_content_length(ctx);
+            if (ctx->r->headers_out.content_length_n == 0) {
+                ctx->r->header_only = 1;
+            }
+        }
+        rc = ngx_http_send_header(ctx->r);
+        if (rc == NGX_ERROR || rc > NGX_OK) {
+            return rc;
+        }
+        ctx->header_sent = 1;
+    }
+
+    if (ctx->has_body && !ctx->cache && eof) {
+        // we have body before, but there's no pending cache here.
+        // in this case, we need to send an empty package.
         ctx->cache = ctx->cache_tail = ngx_alloc_chain_link(ctx->r->pool);
         tmp = ngx_calloc_buf(ctx->r->pool);
         if (tmp == NULL) {
@@ -691,28 +835,18 @@ ngx_http_cgi_flush(ngx_http_cgi_ctx_t *ctx, ngx_flag_t eof) {
         ctx->cache_tail->next = NULL;
     }
 
-    if (!ctx->cache) {
-        return NGX_OK;
-    }
-
-    if (!ctx->header_sent) {
-        // TODO: generate real response header
-        ctx->r->headers_out.status = NGX_HTTP_OK;
-        rc = ngx_http_send_header(ctx->r);
-        if (rc == NGX_ERROR || rc > NGX_OK || ctx->r->header_only) {
-            return rc;
+    if (ctx->cache) {
+        ctx->cache_tail->buf->last_in_chain = 1;
+        ctx->cache_tail->buf->last_buf = eof;
+        for (it = ctx->cache; it; it = it->next) {
+            it->buf->flush = 1;
         }
-        ctx->header_sent = 1;
+        it = ctx->cache;
+        ctx->cache = ctx->cache_tail = NULL;
+        rc = ngx_http_output_filter(ctx->r, it);
     }
 
-    ctx->cache_tail->buf->last_in_chain = 1;
-    ctx->cache_tail->buf->last_buf = eof;
-    for (it = ctx->cache; it; it = it->next) {
-        it->buf->flush = 1;
-    }
-    it = ctx->cache;
-    ctx->cache = ctx->cache_tail = NULL;
-    return ngx_http_output_filter(ctx->r, it);
+    return rc;
 }
 
 
