@@ -26,12 +26,37 @@ typedef struct {
 
 
 typedef struct {
-    ngx_http_request_t *r;
-    ngx_str_t           script;
-    pipe_pair_t         pipe_stdout;
-    // ngx_connection_t    c_stdin;
-    ngx_connection_t   *c_stdout;
-    // ngx_connection_t    c_stderr;
+    // TODO: remove useless fields
+    u_char     *pos;
+    u_char     *end;
+
+    ngx_uint_t  state;
+
+    ngx_uint_t  header_hash;
+    ngx_uint_t  lowcase_index;
+    u_char      lowcase_header[NGX_HTTP_LC_HEADER_LEN];
+
+    u_char     *header_name_start;
+    u_char     *header_name_end;
+    u_char     *header_start;
+    u_char     *header_end;
+
+    unsigned    invalid_header : 1;
+} ngx_http_cgi_header_scan_t;
+
+
+typedef struct {
+    ngx_http_request_t            *r;
+    ngx_str_t                      script;
+    pipe_pair_t                    pipe_stdout;
+    ngx_connection_t              *c_stdout;
+
+    ngx_buf_t                      header_buf;
+    ngx_http_cgi_header_scan_t     header_scan;
+    ngx_flag_t                     header_ready;
+
+    ngx_chain_t                   *cache;  // body sending cache
+    ngx_chain_t                   *cache_tail;  // body sending cache
 } ngx_http_cgi_ctx_t;
 
 
@@ -110,13 +135,13 @@ ngx_http_cgi_ctx_create(ngx_pool_t *pool) {
     ngx_http_cgi_ctx_t *ctx;
     ngx_pool_cleanup_t *cln;
 
-    cln = ngx_pool_cleanup_add(pool, sizeof(ngx_http_cgi_module_ctx));
+    cln = ngx_pool_cleanup_add(pool, sizeof(ngx_http_cgi_ctx_t));
     if (cln == NULL) {
         return NULL;
     }
 
     ctx = cln->data;
-    ngx_memzero(ctx, sizeof(ngx_http_cgi_module_ctx));
+    ngx_memzero(ctx, sizeof(ngx_http_cgi_ctx_t));
 
     cln->handler = ngx_http_cgi_ctx_cleanup;
 
@@ -230,70 +255,470 @@ cleanup:
 }
 
 
+// This function is copied from ngx_http_parse_header_line
+// The original version needs ngx_http_request_t, that's a trouble to use
+// it for other purpose. So I forked it here.
+ngx_int_t
+ngx_http_cgi_scan_header_line(ngx_http_cgi_header_scan_t *ctx,
+    ngx_uint_t allow_underscores)
+{
+    u_char      c, ch, *p;
+    ngx_uint_t  hash, i;
+    enum {
+        sw_start = 0,
+        sw_name,
+        sw_space_before_value,
+        sw_value,
+        sw_space_after_value,
+        sw_ignore_line,
+        sw_almost_done,
+        sw_header_almost_done
+    } state;
+
+    /* the last '\0' is not needed because string is zero terminated */
+
+    static u_char  lowcase[] =
+        "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        "\0\0\0\0\0\0\0\0\0\0\0\0\0-\0\0" "0123456789\0\0\0\0\0\0"
+        "\0abcdefghijklmnopqrstuvwxyz\0\0\0\0\0"
+        "\0abcdefghijklmnopqrstuvwxyz\0\0\0\0\0"
+        "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
+
+    state = ctx->state;
+    hash = ctx->header_hash;
+    i = ctx->lowcase_index;
+
+    for (p = ctx->pos; p < ctx->end; p++) {
+        ch = *p;
+
+        switch (state) {
+
+        /* first char */
+        case sw_start:
+            ctx->header_name_start = p;
+            ctx->invalid_header = 0;
+
+            switch (ch) {
+            case CR:
+                ctx->header_end = p;
+                state = sw_header_almost_done;
+                break;
+            case LF:
+                ctx->header_end = p;
+                goto header_done;
+            default:
+                state = sw_name;
+
+                c = lowcase[ch];
+
+                if (c) {
+                    hash = ngx_hash(0, c);
+                    ctx->lowcase_header[0] = c;
+                    i = 1;
+                    break;
+                }
+
+                if (ch == '_') {
+                    if (allow_underscores) {
+                        hash = ngx_hash(0, ch);
+                        ctx->lowcase_header[0] = ch;
+                        i = 1;
+
+                    } else {
+                        hash = 0;
+                        i = 0;
+                        ctx->invalid_header = 1;
+                    }
+
+                    break;
+                }
+
+                if (ch <= 0x20 || ch == 0x7f || ch == ':') {
+                    ctx->header_end = p;
+                    return NGX_HTTP_PARSE_INVALID_HEADER;
+                }
+
+                hash = 0;
+                i = 0;
+                ctx->invalid_header = 1;
+
+                break;
+
+            }
+            break;
+
+        /* header name */
+        case sw_name:
+            c = lowcase[ch];
+
+            if (c) {
+                hash = ngx_hash(hash, c);
+                ctx->lowcase_header[i++] = c;
+                i &= (NGX_HTTP_LC_HEADER_LEN - 1);
+                break;
+            }
+
+            if (ch == '_') {
+                if (allow_underscores) {
+                    hash = ngx_hash(hash, ch);
+                    ctx->lowcase_header[i++] = ch;
+                    i &= (NGX_HTTP_LC_HEADER_LEN - 1);
+
+                } else {
+                    ctx->invalid_header = 1;
+                }
+
+                break;
+            }
+
+            if (ch == ':') {
+                ctx->header_name_end = p;
+                state = sw_space_before_value;
+                break;
+            }
+
+            if (ch == CR) {
+                ctx->header_name_end = p;
+                ctx->header_start = p;
+                ctx->header_end = p;
+                state = sw_almost_done;
+                break;
+            }
+
+            if (ch == LF) {
+                ctx->header_name_end = p;
+                ctx->header_start = p;
+                ctx->header_end = p;
+                goto done;
+            }
+
+            if (ch <= 0x20 || ch == 0x7f) {
+                ctx->header_end = p;
+                return NGX_HTTP_PARSE_INVALID_HEADER;
+            }
+
+            ctx->invalid_header = 1;
+
+            break;
+
+        /* space* before header value */
+        case sw_space_before_value:
+            switch (ch) {
+            case ' ':
+                break;
+            case CR:
+                ctx->header_start = p;
+                ctx->header_end = p;
+                state = sw_almost_done;
+                break;
+            case LF:
+                ctx->header_start = p;
+                ctx->header_end = p;
+                goto done;
+            case '\0':
+                ctx->header_end = p;
+                return NGX_HTTP_PARSE_INVALID_HEADER;
+            default:
+                ctx->header_start = p;
+                state = sw_value;
+                break;
+            }
+            break;
+
+        /* header value */
+        case sw_value:
+            switch (ch) {
+            case ' ':
+                ctx->header_end = p;
+                state = sw_space_after_value;
+                break;
+            case CR:
+                ctx->header_end = p;
+                state = sw_almost_done;
+                break;
+            case LF:
+                ctx->header_end = p;
+                goto done;
+            case '\0':
+                ctx->header_end = p;
+                return NGX_HTTP_PARSE_INVALID_HEADER;
+            }
+            break;
+
+        /* space* before end of header line */
+        case sw_space_after_value:
+            switch (ch) {
+            case ' ':
+                break;
+            case CR:
+                state = sw_almost_done;
+                break;
+            case LF:
+                goto done;
+            case '\0':
+                ctx->header_end = p;
+                return NGX_HTTP_PARSE_INVALID_HEADER;
+            default:
+                state = sw_value;
+                break;
+            }
+            break;
+
+        /* ignore header line */
+        case sw_ignore_line:
+            switch (ch) {
+            case LF:
+                state = sw_start;
+                break;
+            default:
+                break;
+            }
+            break;
+
+        /* end of header line */
+        case sw_almost_done:
+            switch (ch) {
+            case LF:
+                goto done;
+            case CR:
+                break;
+            default:
+                return NGX_HTTP_PARSE_INVALID_HEADER;
+            }
+            break;
+
+        /* end of header */
+        case sw_header_almost_done:
+            switch (ch) {
+            case LF:
+                goto header_done;
+            default:
+                return NGX_HTTP_PARSE_INVALID_HEADER;
+            }
+        }
+    }
+
+    ctx->pos = p;
+    ctx->state = state;
+    ctx->header_hash = hash;
+    ctx->lowcase_index = i;
+
+    return NGX_AGAIN;
+
+done:
+
+    ctx->pos = p + 1;
+    ctx->state = sw_start;
+    ctx->header_hash = hash;
+    ctx->lowcase_index = i;
+
+    return NGX_OK;
+
+header_done:
+
+    ctx->pos = p + 1;
+    ctx->state = sw_start;
+
+    return NGX_HTTP_PARSE_HEADER_DONE;
+}
+
+
+static ngx_int_t
+ngx_http_cgi_scan_header(ngx_http_cgi_ctx_t *ctx) {
+    // TODO: impl this
+    ctx->header_ready = 1;
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_http_cgi_append_to_header_buf(ngx_http_cgi_ctx_t *ctx,
+    u_char *buf, u_char *buf_end)
+{
+    size_t    buf_size;
+    size_t    old_size;
+    size_t    old_cap;
+    size_t    new_cap;
+    u_char   *new_buf;
+
+    buf_size = buf_end - buf;
+    if (buf_size == 0) {
+        return NGX_OK;
+    }
+
+    if (ctx->header_buf.last + buf_size > ctx->header_buf.end) {
+        old_size = ctx->header_buf.last - ctx->header_buf.start;
+        old_cap = ctx->header_buf.end - ctx->header_buf.start;
+        new_cap = old_cap ? old_cap * 2 : 1024;
+        while (new_cap < old_size + buf_size) {
+            new_cap *= 2;
+        }
+        new_buf = ngx_palloc(ctx->r->pool, new_cap);
+        if (!new_buf) {
+            return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        }
+        if (ctx->header_buf.start) {
+            ngx_memcpy(new_buf, ctx->header_buf.start, old_size);
+            ngx_pfree(ctx->r->pool, ctx->header_buf.start);
+        }
+        ctx->header_buf.start = ctx->header_buf.pos = new_buf;
+        ctx->header_buf.last = ctx->header_buf.start + old_size;
+        ctx->header_buf.end = ctx->header_buf.start + new_cap;
+    }
+
+    ctx->header_buf.last = ngx_cpymem(ctx->header_buf.last, buf, buf_size);
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_http_cgi_append_body(ngx_http_cgi_ctx_t *ctx, u_char *buf, u_char *buf_end)
+{
+    ngx_http_request_t *r = ctx->r;
+    ngx_buf_t          *tmp;
+
+    if (buf_end == buf) {
+        return NGX_OK;
+    }
+
+    tmp = ngx_create_temp_buf(r->pool, buf_end - buf);
+    if (tmp == NULL) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    tmp->last = ngx_cpymem(tmp->pos, buf, buf_end - buf);
+
+    if (ctx->cache_tail) {
+        ctx->cache_tail->next = ngx_alloc_chain_link(r->pool);
+        ctx->cache_tail = ctx->cache_tail->next;
+    } else {
+        ctx->cache = ctx->cache_tail = ngx_alloc_chain_link(r->pool);
+    }
+    if (!ctx->cache_tail) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    ctx->cache_tail->buf = tmp;
+    ctx->cache_tail->next = NULL;
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_http_cgi_add_output(ngx_http_cgi_ctx_t *ctx,
+                        u_char *buf, u_char *buf_end) {
+    ngx_int_t rc;
+
+    if (buf_end == buf) {
+        return NGX_OK;
+    }
+
+    if (!ctx->header_ready) {
+        ctx->header_scan.pos = buf;
+        ctx->header_scan.end = buf_end;
+        for (;;) {
+            rc = ngx_http_cgi_scan_header_line(&ctx->header_scan, 0);
+            if (rc == NGX_AGAIN) {
+                // we need more data, append current buf to header buf
+                // and wait more
+                rc = ngx_http_cgi_append_to_header_buf(ctx, buf, buf_end);
+                if (rc != NGX_OK) {
+                    return rc;
+                }
+                return NGX_OK;
+            } else if (rc == NGX_OK) {
+                // got a header line
+                // we discard the result for now, because buf address may
+                // changed when more data come in.
+                continue;
+            } else if (rc == NGX_HTTP_PARSE_HEADER_DONE) {
+                // we got the whole header
+                // append part of buf to header buf
+                rc = ngx_http_cgi_append_to_header_buf(
+                        ctx, buf, ctx->header_scan.pos);
+                if (rc != NGX_OK) {
+                    return rc;
+                }
+                rc = ngx_http_cgi_scan_header(ctx);
+                if (rc != NGX_OK) {
+                    return rc;
+                }
+                // move the remain data from header to body
+                return ngx_http_cgi_append_body(
+                        ctx,
+                        ctx->header_scan.pos,
+                        buf_end);
+            } else {
+                return rc;
+            }
+        }
+    } else {
+        return ngx_http_cgi_append_body(ctx, buf, buf_end);
+    }
+}
+
+
+static ngx_int_t
+ngx_http_cgi_flush(ngx_http_cgi_ctx_t *ctx, ngx_flag_t eof) {
+    ngx_buf_t   *tmp;
+    ngx_chain_t *it;
+
+    if (eof && !ctx->cache) {
+        // alloc an empty buf, if there's nothing remain
+        ctx->cache = ctx->cache_tail = ngx_alloc_chain_link(ctx->r->pool);
+        tmp = ngx_calloc_buf(ctx->r->pool);
+        if (tmp == NULL) {
+            return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        }
+        ctx->cache_tail->buf = tmp;
+        ctx->cache_tail->next = NULL;
+    }
+
+    if (!ctx->cache) {
+        return NGX_OK;
+    }
+
+    ctx->cache_tail->buf->last_in_chain = 1;
+    ctx->cache_tail->buf->last_buf = eof;
+    for (it = ctx->cache; it; it = it->next) {
+        it->buf->flush = 1;
+    }
+    it = ctx->cache;
+    ctx->cache = ctx->cache_tail = NULL;
+    return ngx_http_output_filter(ctx->r, it);
+}
+
+
 static void
 ngx_http_cgi_stdout_data_handler(ngx_event_t *ev) {
     ngx_connection_t   *c = ev->data;
     ngx_http_cgi_ctx_t *ctx = c->data;
     ngx_http_request_t *r = ctx->r;
-    ngx_buf_t          *tmp;
-    ngx_chain_t        *head = NULL;
-    ngx_chain_t        *tail = NULL;
     ngx_int_t           rc = NGX_OK;
 
-    char buf[65536];
+    u_char buf[65536];
     int nread;
 
     for (;;) {
         nread = read(c->fd, buf, sizeof(buf));
         if (nread > 0) {
-            tmp = ngx_create_temp_buf(r->pool, nread);
-            if (tmp == NULL) {
-                rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+            rc = ngx_http_cgi_add_output(ctx, buf, buf + nread);
+            if (rc != NGX_OK) {
                 goto error;
             }
-
-            tmp->last = ngx_cpymem(tmp->pos, buf, nread);
-            tmp->flush = 1;
-
-            if (tail) {
-                tail->next = ngx_alloc_chain_link(r->pool);
-                tail = tail->next;
-            } else {
-                head = tail = ngx_alloc_chain_link(r->pool);
-            }
-            if (!tail) {
-                rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-                goto error;
-            }
-
-            tail->buf = tmp;
-            tail->next = NULL;
         } else if (nread == 0) {
             // end of file
-            if (!tail) {
-                // alloc an empty buf, if there's nothing remain
-                head = tail = ngx_alloc_chain_link(r->pool);
-                tmp = ngx_calloc_buf(r->pool);
-                if (tmp == NULL) {
-                    rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-                    goto error;
-                }
-                tail->buf = tmp;
-                tail->next = NULL;
-            }
-            tail->buf->last_in_chain = 1;
-            tail->buf->last_buf = 1;
-            ngx_http_finalize_request(r, ngx_http_output_filter(r, head));
+            ngx_http_finalize_request(r, ngx_http_cgi_flush(ctx, 1));
             return;
         } else {
             if (ngx_errno == EAGAIN) {
                 // wait for more data
-                if (tail) {
-                    tail->buf->last_in_chain = 1;
-                    rc = ngx_http_output_filter(r, head);
-                    if (rc == NGX_ERROR || rc > NGX_OK) {
-                        goto error;
-                    }
+                rc = ngx_http_cgi_flush(ctx, 0);
+                if (rc != NGX_OK) {
+                    goto error;
                 }
                 rc = ngx_handle_read_event(ctx->c_stdout->read, 0);
                 if (rc == NGX_ERROR || rc > NGX_OK) {
@@ -336,7 +761,7 @@ ngx_http_cgi_handler(ngx_http_request_t *r)
         if (ctx == NULL) {
             return NGX_HTTP_INTERNAL_SERVER_ERROR;
         }
-        ngx_http_set_ctx(r, ctx, ngx_http_cgi_module);
+        // ngx_http_set_ctx(r, ctx, ngx_http_cgi_module);
     }
 
     ctx->r = r;
