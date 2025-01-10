@@ -53,6 +53,7 @@ typedef struct {
     ngx_http_request_t            *r;
 
     ngx_str_t                      script;
+    ngx_str_t                      path_info;  // path sub script
     ngx_array_t                   *script_env;
 
     pipe_pair_t                    pipe_stdout;
@@ -209,7 +210,8 @@ static ngx_int_t
 ngx_http_cgi_locate_script(ngx_http_cgi_ctx_t *ctx) {
     ngx_http_request_t        *r = ctx->r;
     ngx_http_core_loc_conf_t  *clcf;
-    size_t                     strip_prefix;
+    size_t                     uri_start;
+    size_t                     uri_end;
     ngx_file_info_t            script_info;
 
     clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
@@ -230,38 +232,66 @@ ngx_http_cgi_locate_script(ngx_http_cgi_ctx_t *ctx) {
         ctx->script.len += 1;
     }
 
-    strip_prefix = clcf->alias;
-    if (strip_prefix > r->uri.len) {
+    uri_start = clcf->alias;
+    if (uri_start > r->uri.len) {
         // this should not happens
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
     // remove leading /s in uri
-    while (r->uri.data[strip_prefix] == '/') {
-        strip_prefix += 1;
+    while (r->uri.data[uri_start] == '/') {
+        uri_start += 1;
+    }
+
+    uri_end = r->uri.len;
+    while (uri_end > uri_start && r->uri.data[uri_end - 1] == '/') {
+        --uri_end;
     }
 
     // append uri to script path
-    memcpy(ctx->script.data + ctx->script.len, r->uri.data + strip_prefix,
-           r->uri.len - strip_prefix);
-    ctx->script.len += r->uri.len - strip_prefix;
+    memcpy(ctx->script.data + ctx->script.len, r->uri.data + uri_start,
+           uri_end - uri_start);
+    ctx->script.len += uri_end - uri_start;
 
-    // convert string to c string
-    ctx->script.data[ctx->script.len] = 0;
+    for (;;) {
+        // convert string to c string
+        ctx->script.data[ctx->script.len] = 0;
+
+        if (ngx_file_info(ctx->script.data, &script_info) == -1) {
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
+                        "stat \"%V\" failed", &ctx->script);
+            if (ngx_errno == EACCES) {
+                return NGX_HTTP_FORBIDDEN;
+            } else if (ngx_errno = ENOTDIR) {
+                // remove a level from uri
+                while (uri_end > uri_start && r->uri.data[uri_end - 1] != '/') {
+                    --uri_end;
+                    --ctx->script.len;
+                }
+                while (uri_end > uri_start && r->uri.data[uri_end - 1] == '/') {
+                    --uri_end;
+                    --ctx->script.len;
+                }
+                if (uri_end == uri_start) {
+                    return NGX_HTTP_INTERNAL_SERVER_ERROR;
+                } else {
+                    continue;
+                }
+            } else if (ngx_errno == ENOENT) {
+                return NGX_HTTP_NOT_FOUND;
+            }
+            return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        } else {
+            break;
+        }
+    }
+
+    ctx->path_info.data = r->uri.data + uri_end;
+    ctx->path_info.len = r->uri.len - uri_end;
 
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "cgi script path: %V", &ctx->script);
-
-    if (ngx_file_info(ctx->script.data, &script_info) == -1) {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
-                      "run cgi \"%V\" failed", &ctx->script);
-        if (ngx_errno == EACCES) {
-            return NGX_HTTP_FORBIDDEN;
-        }
-        if (ngx_errno == ENOENT) {
-            return NGX_HTTP_NOT_FOUND;
-        }
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
-    }
+    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                   "cgi script path: %V", &ctx->path_info);
 
     if (!ngx_is_file(&script_info)) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
@@ -423,9 +453,12 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
 
     _add_env_const(ctx, "SERVER_SOFTWARE", "nginx/" NGINX_VERSION);
 
+    if (ctx->path_info.len > 0) {
+        _add_env_nstr(ctx, "PATH_INFO", &ctx->path_info);
+    }
+
     // TODO: supports following vars
     // AUTH_TYPE
-    // PATH_INFO
     // PATH_TRANSLATED
     // REMOTE_HOST
     // REMOTE_IDENT
