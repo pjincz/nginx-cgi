@@ -31,7 +31,6 @@ typedef struct {
 
 
 typedef struct {
-    // TODO: remove useless fields
     u_char     *pos;
     u_char     *end;
 
@@ -97,6 +96,7 @@ static ngx_command_t  ngx_http_cgi_commands[] = {
     // TODO: add cgi_x_only
     // TODO: add cgi_index to generate content for directory?
     // TODO: add cgi_detailed_error_page?
+    // TODO: add cgi_strict to allow/disallow invalid header
 
       ngx_null_command
 };
@@ -1250,6 +1250,7 @@ ngx_http_cgi_create_loc_conf(ngx_conf_t *cf)
     }
 
     conf->enabled = NGX_CONF_UNSET;
+    // conf->path is initialized by ngx_pcalloc
 
     return conf;
 }
