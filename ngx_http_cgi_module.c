@@ -399,9 +399,14 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
     // TODO: should we convert SCRIPT_FILENAME to abs path here?
     _add_env_nstr(ctx, "SCRIPT_FILENAME", &ctx->script);
 
-    // TODO: SERVER_ADDR returns 0.0.0.0, is different to apache's output
-    _add_env_addr(ctx, "SERVER_ADDR", con->local_sockaddr, con->local_socklen);
-    _add_env_port(ctx, "SERVER_PORT", con->local_sockaddr);
+    {
+        struct sockaddr_storage addr;
+        socklen_t addr_len = sizeof(addr);
+        if (getsockname(con->fd, (struct sockaddr *)&addr, &addr_len) != -1) {
+            _add_env_addr(ctx, "SERVER_ADDR", (void*)&addr, addr_len);
+            _add_env_port(ctx, "SERVER_PORT", (void*)&addr);
+        }
+    }
 
     // TODO: SERVER_NAME not work
     _add_env_nstr(ctx, "SERVER_NAME", &srcf->server_name);
