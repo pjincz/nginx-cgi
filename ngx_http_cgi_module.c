@@ -96,6 +96,11 @@ static char *ngx_http_cgi_merge_loc_conf(
 static char * ngx_http_cgi_set_interpreter(
     ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 
+static char *ngx_http_cgi_enable_post(ngx_conf_t *cf, void *post, void *data);
+static ngx_conf_post_t  ngx_http_cgi_enable_post_list = {
+    ngx_http_cgi_enable_post
+};
+
 
 static ngx_command_t  ngx_http_cgi_commands[] = {
 
@@ -107,7 +112,7 @@ static ngx_command_t  ngx_http_cgi_commands[] = {
         ngx_conf_set_flag_slot,
         NGX_HTTP_LOC_CONF_OFFSET,
         offsetof(ngx_http_cgi_loc_conf_t, enabled),
-        NULL
+        &ngx_http_cgi_enable_post_list
     },
 
     // Change cgi script PATH environment variable
@@ -1563,6 +1568,28 @@ ngx_http_cgi_set_interpreter(ngx_conf_t *cf, ngx_command_t *cmd, void *c) {
 }
 
 
+static char *
+ngx_http_cgi_enable_post(ngx_conf_t *cf, void *post, void *data) {
+    ngx_flag_t  *enabled = data;
+    ngx_http_core_loc_conf_t  *clcf;
+
+    if (*enabled) {
+        clcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
+
+        if (!clcf->named && clcf->name.len > 0 &&
+                clcf->name.data[clcf->name.len - 1] != '/') {
+            // enable cgi in a location tailed without / will cause security
+            // vulnerability. for example: /cgi-binsomething may be considered
+            // as a cgi script. stop it here
+            return "security vulnerability: location with cgi on must always "
+                   "finished with / for security reason";
+        }
+    }
+
+    return NGX_CONF_OK;
+}
+
+
 static void *
 ngx_http_cgi_create_loc_conf(ngx_conf_t *cf)
 {
@@ -1600,9 +1627,6 @@ ngx_http_cgi_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
         ngx_http_core_loc_conf_t  *clcf;
 
         clcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
-
-        // TODO: stop `location /cgi-bin` be set here, it will be a security
-        // vulnerability
 
         clcf->handler = ngx_http_cgi_handler;
     }
