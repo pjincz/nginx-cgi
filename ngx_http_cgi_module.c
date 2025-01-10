@@ -245,7 +245,7 @@ static int ngx_http_cgi_child_proc(void *arg) {
     //  __WCLONE is required to wait cloned process
     rc = waitpid(grandchild_pid, &wstatus, WNOHANG | __WCLONE);
     if (rc > 0) {
-        // TODO: pass grandson exit status to parent
+        // TODO: pass grandchild exit status to parent
         // grandchild exits immediently after clone, exec is failed
         _exit(CHILD_PROCESS_EXEC_ERROR);
     } else if (rc == 0) {
@@ -611,7 +611,7 @@ ngx_http_cgi_spawn_child_process(ngx_http_cgi_ctx_t *ctx) {
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, ctx->r->connection->log, 0,
             "cgi spawn process: %d", child_pid);
 
-    // child process will exit immediately after forking grandson
+    // child process will exit immediately after forking grandchild
     //  __WCLONE is required to wait cloned process
     if (waitpid(child_pid, &wstatus, __WCLONE) == -1) {
         ngx_log_error(NGX_LOG_ERR, ctx->r->connection->log, ngx_errno,
@@ -1204,6 +1204,13 @@ ngx_http_cgi_flush(ngx_http_cgi_ctx_t *ctx, ngx_flag_t eof) {
     }
 
     if (!ctx->header_sent) {
+        if (!ctx->header_ready) {
+            // header is not ready, the cgi output is malformed
+            ngx_log_error(NGX_LOG_ERR, ctx->r->connection->log, 0,
+                    "cgi header not existing or not finished");
+            return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        }
+
         if (eof) {
             // we didn't send out header yet, but we reaches the eof
             // we can caculate the content length directly to avoid chunk mode
@@ -1454,6 +1461,7 @@ ngx_http_cgi_handler(ngx_http_request_t *r)
 {
     ngx_int_t  rc;
 
+    // TODO: streaming request body support
     rc = ngx_http_read_client_request_body(r, ngx_http_cgi_handle_init);
     if (rc >= NGX_HTTP_SPECIAL_RESPONSE) {
         return rc;
