@@ -27,6 +27,7 @@ typedef int pipe_pair_t[2];
 typedef struct {
     ngx_flag_t enabled;
     ngx_str_t  path;
+    ngx_flag_t strict_mode;
 } ngx_http_cgi_loc_conf_t;
 
 
@@ -51,6 +52,7 @@ typedef struct {
 
 typedef struct {
     ngx_http_request_t            *r;
+    ngx_http_cgi_loc_conf_t       *conf;
 
     ngx_str_t                      script;
     ngx_str_t                      path_info;  // path sub script
@@ -87,26 +89,46 @@ static char *ngx_http_cgi_merge_loc_conf(ngx_conf_t *cf, void *parent,
 
 static ngx_command_t  ngx_http_cgi_commands[] = {
 
-    { ngx_string("cgi"),
-      NGX_HTTP_LOC_CONF | NGX_CONF_FLAG,
-      ngx_conf_set_flag_slot,
-      NGX_HTTP_LOC_CONF_OFFSET,
-      offsetof(ngx_http_cgi_loc_conf_t, enabled),
-      NULL },
+    // Enable or disable cgi module on giving location block
+    // Default: off
+    {
+        ngx_string("cgi"),
+        NGX_HTTP_LOC_CONF | NGX_CONF_FLAG,
+        ngx_conf_set_flag_slot,
+        NGX_HTTP_LOC_CONF_OFFSET,
+        offsetof(ngx_http_cgi_loc_conf_t, enabled),
+        NULL
+    },
 
-    { ngx_string("cgi_path"),
-      NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
-      ngx_conf_set_str_slot,
-      NGX_HTTP_LOC_CONF_OFFSET,
-      offsetof(ngx_http_cgi_loc_conf_t, path),
-      NULL },
+    // Change cgi script PATH environment variable
+    // Default: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    {
+        ngx_string("cgi_path"),
+        NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+        ngx_conf_set_str_slot,
+        NGX_HTTP_LOC_CONF_OFFSET,
+        offsetof(ngx_http_cgi_loc_conf_t, path),
+        NULL
+    },
+
+    // Enable or disable strict mode
+    // When strict mode turns on, bad cgi header will cause 500 error
+    // When strict mode turns off, bad cgi header be forward as it is
+    // Default: on
+    {
+        ngx_string("cgi_strict"),
+        NGX_HTTP_LOC_CONF | NGX_CONF_FLAG,
+        ngx_conf_set_flag_slot,
+        NGX_HTTP_LOC_CONF_OFFSET,
+        offsetof(ngx_http_cgi_loc_conf_t, strict_mode),
+        NULL
+    },
 
     // TODO: add following symbolic link?
     // TODO: add cgi_interpreter
     // TODO: add cgi_x_only
     // TODO: add cgi_index to generate content for directory?
     // TODO: add cgi_detailed_error_page?
-    // TODO: add cgi_strict to allow/disallow invalid header
 
       ngx_null_command
 };
@@ -424,7 +446,6 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
     const int                  init_array_size = 32;
     ngx_http_request_t        *r = ctx->r;
     ngx_connection_t          *con = r->connection;
-    ngx_http_cgi_loc_conf_t   *cgi_lcf;
     ngx_http_core_loc_conf_t  *clcf;
     ngx_http_core_srv_conf_t  *srcf;
 
@@ -434,11 +455,6 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
     ngx_list_part_t           *part;
     ngx_uint_t                 i;
     ngx_table_elt_t           *v;
-
-    cgi_lcf = ngx_http_get_module_loc_conf(r, ngx_http_cgi_module);
-    if (cgi_lcf == NULL) {
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
-    }
 
     clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
     if (clcf == NULL) {
@@ -463,7 +479,7 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
 
     _add_env_const(ctx, "GATEWAY_INTERFACE", "CGI/1.1");
 
-    _add_env_nstr(ctx, "PATH", &cgi_lcf->path);
+    _add_env_nstr(ctx, "PATH", &ctx->conf->path);
 
     // TODO: should we convert DOCUMENT_ROOT to abs path here?
     _add_env_nstr(ctx, "DOCUMENT_ROOT", &clcf->root);
@@ -661,8 +677,7 @@ cleanup:
 // The original version needs ngx_http_request_t, that's a trouble to use
 // it for other purpose. So I forked it here.
 ngx_int_t
-ngx_http_cgi_scan_header_line(ngx_http_cgi_header_scan_t *ctx,
-    ngx_uint_t allow_underscores)
+ngx_http_cgi_scan_header_line(ngx_http_cgi_header_scan_t *ctx)
 {
     u_char      c, ch, *p;
     ngx_uint_t  hash, i;
@@ -723,21 +738,6 @@ ngx_http_cgi_scan_header_line(ngx_http_cgi_header_scan_t *ctx,
                     break;
                 }
 
-                if (ch == '_') {
-                    if (allow_underscores) {
-                        hash = ngx_hash(0, ch);
-                        ctx->lowcase_header[0] = ch;
-                        i = 1;
-
-                    } else {
-                        hash = 0;
-                        i = 0;
-                        ctx->invalid_header = 1;
-                    }
-
-                    break;
-                }
-
                 if (ch <= 0x20 || ch == 0x7f || ch == ':') {
                     ctx->header_end = p;
                     return NGX_HTTP_PARSE_INVALID_HEADER;
@@ -760,19 +760,6 @@ ngx_http_cgi_scan_header_line(ngx_http_cgi_header_scan_t *ctx,
                 hash = ngx_hash(hash, c);
                 ctx->lowcase_header[i++] = c;
                 i &= (NGX_HTTP_LC_HEADER_LEN - 1);
-                break;
-            }
-
-            if (ch == '_') {
-                if (allow_underscores) {
-                    hash = ngx_hash(hash, ch);
-                    ctx->lowcase_header[i++] = ch;
-                    i &= (NGX_HTTP_LC_HEADER_LEN - 1);
-
-                } else {
-                    ctx->invalid_header = 1;
-                }
-
                 break;
             }
 
@@ -943,7 +930,7 @@ ngx_http_cgi_scan_header(ngx_http_cgi_ctx_t *ctx) {
     scan->end = ctx->header_buf.end;
 
     for (;;) {
-        rc = ngx_http_cgi_scan_header_line(scan, 0);
+        rc = ngx_http_cgi_scan_header_line(scan);
 
         if (rc == NGX_OK) {
             name.data = scan->header_name_start;
@@ -1129,8 +1116,8 @@ ngx_http_cgi_add_output(ngx_http_cgi_ctx_t *ctx,
         ctx->header_scan.pos = buf;
         ctx->header_scan.end = buf_end;
         for (;;) {
-            rc = ngx_http_cgi_scan_header_line(&ctx->header_scan, 0);
-            if (ctx->header_scan.invalid_header) {
+            rc = ngx_http_cgi_scan_header_line(&ctx->header_scan);
+            if (ctx->header_scan.invalid_header && ctx->conf->strict_mode) {
                 rc = NGX_HTTP_PARSE_INVALID_HEADER;
             }
             if (rc == NGX_AGAIN) {
@@ -1369,6 +1356,12 @@ ngx_http_cgi_handle_init(ngx_http_request_t *r) {
 
     ctx->r = r;
 
+    ctx->conf = ngx_http_get_module_loc_conf(r, ngx_http_cgi_module);
+    if (ctx->conf == NULL) {
+        rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+        goto error;
+    }
+
     ctx = ngx_http_get_module_ctx(r, ngx_http_cgi_module);
     if (ctx == NULL) {
         rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
@@ -1483,6 +1476,7 @@ ngx_http_cgi_create_loc_conf(ngx_conf_t *cf)
 
     conf->enabled = NGX_CONF_UNSET;
     // conf->path is initialized by ngx_pcalloc
+    conf->strict_mode = NGX_CONF_UNSET;
 
     return conf;
 }
@@ -1497,6 +1491,7 @@ ngx_http_cgi_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_conf_merge_value(conf->enabled, prev->enabled, 0);
     ngx_conf_merge_str_value(conf->path, prev->path,
             "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
+    ngx_conf_merge_value(conf->strict_mode, prev->strict_mode, 1);
 
     if (conf->enabled) {
         ngx_http_core_loc_conf_t  *clcf;
