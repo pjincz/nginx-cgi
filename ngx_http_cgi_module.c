@@ -29,6 +29,7 @@ typedef struct {
     ngx_str_t    path;
     ngx_flag_t   strict_mode;
     ngx_array_t *interpreter;  // array<char *>
+    ngx_flag_t   x_only;
 } ngx_http_cgi_loc_conf_t;
 
 
@@ -146,8 +147,22 @@ static ngx_command_t  ngx_http_cgi_commands[] = {
         NULL
     },
 
+    // Enable or disable x-only mode
+    // When this option turns on, only file with x perm will be treated as cgi
+    // script. Otherwise 403 will be returned. If this option turns off, the cgi
+    // plugin will try to execute the script no matter whther x perm exists.
+    // Note: this option only meanful if `cgi_interpreter` is set.
+    // Default: on
+    {
+        ngx_string("cgi_x_only"),
+        NGX_HTTP_LOC_CONF | NGX_CONF_FLAG,
+        ngx_conf_set_flag_slot,
+        NGX_HTTP_LOC_CONF_OFFSET,
+        offsetof(ngx_http_cgi_loc_conf_t, x_only),
+        NULL
+    },
+
     // TODO: add following symbolic link?
-    // TODO: add cgi_x_only
     // TODO: add cgi_index to generate content for directory?
     // TODO: add cgi_detailed_error_page?
 
@@ -394,7 +409,7 @@ ngx_http_cgi_locate_script(ngx_http_cgi_ctx_t *ctx) {
         return NGX_HTTP_NOT_FOUND;
     }
 
-    if (access((char*)ctx->script.data, X_OK) != 0) {
+    if (ctx->conf->x_only && access((char*)ctx->script.data, X_OK) != 0) {
         // no execute permission
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                 "run cgi \"%V\" failed, no x permission", &ctx->script);
@@ -1563,6 +1578,7 @@ ngx_http_cgi_create_loc_conf(ngx_conf_t *cf)
     // conf->path is initialized by ngx_pcalloc
     conf->strict_mode = NGX_CONF_UNSET;
     conf->interpreter = NGX_CONF_UNSET_PTR;
+    conf->x_only = NGX_CONF_UNSET;
 
     return conf;
 }
@@ -1579,6 +1595,7 @@ ngx_http_cgi_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
             "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
     ngx_conf_merge_value(conf->strict_mode, prev->strict_mode, 1);
     ngx_conf_merge_ptr_value(conf->interpreter, prev->interpreter, NULL);
+    ngx_conf_merge_value(conf->x_only, prev->x_only, 1);
 
     if (conf->enabled) {
         ngx_http_core_loc_conf_t  *clcf;
