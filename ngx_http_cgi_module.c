@@ -423,6 +423,14 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
 
     _add_env_const(ctx, "SERVER_SOFTWARE", "nginx/" NGINX_VERSION);
 
+    // TODO: supports following vars
+    // AUTH_TYPE
+    // PATH_INFO
+    // PATH_TRANSLATED
+    // REMOTE_HOST
+    // REMOTE_IDENT
+    // REMOTE_USER
+
     // go through incoming headers, and convert add them to env
     part = &r->headers_in.headers.part;
     v = part->elts;
@@ -443,6 +451,10 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
             _add_env_nstr(ctx, "HTTP_HOST", &v[i].value);
         } else if (_strieq(v[i].key, "User-Agent")) {
             _add_env_nstr(ctx, "HTTP_USER_AGENT", &v[i].value);
+        } else if (_strieq(v[i].key, "Content-Length")) {
+            _add_env_nstr(ctx, "CONTENT_LENGTH", &v[i].value);
+        } else if (_strieq(v[i].key, "Content-Type")) {
+            _add_env_nstr(ctx, "CONTENT_TYPE", &v[i].value);
         } else if ((v[i].key.data[0] == 'X' || v[i].key.data[0] == 'x')
                    && v[i].key.data[1] == '-') {
             // extension headers
