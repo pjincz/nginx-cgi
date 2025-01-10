@@ -9,9 +9,9 @@
 #include <ngx_http.h>
 
 
-#define STACK_SIZE                4096
-#define CHILD_PROCESS_VFORK_ERROR 1
-#define CHILD_PROCESS_EXEC_ERROR  2
+#define STACK_SIZE                  4096
+#define CHILD_PROCESS_CLONE_2_ERROR 1
+#define CHILD_PROCESS_EXEC_ERROR    2
 
 #define PIPE_READ_END 0
 #define PIPE_WRITE_END 1
@@ -70,6 +70,13 @@ typedef struct {
     ngx_chain_t                   *cache;  // body sending cache
     ngx_chain_t                   *cache_tail;  // body sending cache
 } ngx_http_cgi_ctx_t;
+
+
+typedef struct {
+    ngx_http_cgi_ctx_t *ctx;
+    char               *child_stack;
+    char               *grandchild_stack;
+} ngx_http_cgi_spwan_vars_t;
 
 
 static ngx_int_t ngx_http_cgi_handler(ngx_http_request_t *r);
@@ -185,10 +192,27 @@ ngx_http_cgi_ctx_create(ngx_pool_t *pool) {
 }
 
 
-static int ngx_http_cgi_child_proc(void *arg) {
+static int ngx_http_cgi_grandchild_proc(void *arg) {
     ngx_http_cgi_ctx_t *ctx = arg;
     char *child_argv[] = {NULL};
-    pid_t pid;
+
+    // Do not use `p` version here, to avoid security issue
+    if (execve((char*)ctx->script.data, child_argv,
+            ctx->script_env->elts) == -1) {
+        _exit(CHILD_PROCESS_EXEC_ERROR);
+    }
+
+    // never reaches here, just for elimating compiler warning
+    return 0;
+}
+
+
+static int ngx_http_cgi_child_proc(void *arg) {
+    ngx_http_cgi_spwan_vars_t *vars = arg;
+    ngx_http_cgi_ctx_t *ctx = vars->ctx;
+    pid_t grandchild_pid = 0;
+    int wstatus = 0;
+    int rc = 0;
 
     close(0);
     close(1);
@@ -206,24 +230,29 @@ static int ngx_http_cgi_child_proc(void *arg) {
     close(ctx->pipe_stdout[PIPE_WRITE_END]);
 
     // fork again to detch
-    pid = vfork();
-    if (pid == -1) {
-        _exit(CHILD_PROCESS_VFORK_ERROR);
+    // again we cannot use fork/vfork here. The forked child process still
+    // has signal handler for SIGCHLD
+    grandchild_pid = clone(ngx_http_cgi_grandchild_proc,
+            vars->grandchild_stack + STACK_SIZE,
+            CLONE_VM | CLONE_VFORK, ctx);
+
+    if (grandchild_pid == -1) {
+        _exit(CHILD_PROCESS_CLONE_2_ERROR);
     }
 
-    if (pid == 0) {
-        // grandson process
-        // Do not use `p` version here, to avoid security issue
-        if (execve((char*)ctx->script.data, child_argv,
-                ctx->script_env->elts) == -1) {
-            _exit(CHILD_PROCESS_EXEC_ERROR);
-        }
-
-        // never reaches here, just for elimating compiler warning
-        return 0;
+    // clone returns after _exit or exec, if it failed, we can get the error
+    // immediently.
+    //  __WCLONE is required to wait cloned process
+    rc = waitpid(grandchild_pid, &wstatus, WNOHANG | __WCLONE);
+    if (rc > 0) {
+        // TODO: pass grandson exit status to parent
+        // grandchild exits immediently after clone, exec is failed
+        _exit(CHILD_PROCESS_EXEC_ERROR);
+    } else if (rc == 0) {
+        // grandchild is running, that's good!
+        _exit(0);
     } else {
-        // child process
-        // TODO: report pid to parent process via pipe
+        // error happens on waitpid, that's not important, just quit
         _exit(0);
     }
 }
@@ -539,7 +568,7 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
 
 static ngx_int_t
 ngx_http_cgi_spawn_child_process(ngx_http_cgi_ctx_t *ctx) {
-    char *stack = NULL;
+    ngx_http_cgi_spwan_vars_t spawn_vars = {0};
     pid_t child_pid = 0;
     int wstatus = 0;
     ngx_int_t rc = NGX_OK;
@@ -559,8 +588,10 @@ ngx_http_cgi_spawn_child_process(ngx_http_cgi_ctx_t *ctx) {
         goto cleanup;
     }
 
-    stack = malloc(STACK_SIZE);
-    if (!stack) {
+    spawn_vars.ctx = ctx;
+    spawn_vars.child_stack = malloc(STACK_SIZE);
+    spawn_vars.grandchild_stack = malloc(STACK_SIZE);
+    if (!spawn_vars.child_stack || !spawn_vars.grandchild_stack) {
         ngx_log_error(NGX_LOG_ERR, ctx->r->connection->log, ngx_errno,
                      "malloc");
         rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
@@ -568,8 +599,9 @@ ngx_http_cgi_spawn_child_process(ngx_http_cgi_ctx_t *ctx) {
     }
 
     // use clone instead of fork/vfork to avoid SIGCHLD be sent to nginx here
-    child_pid = clone(ngx_http_cgi_child_proc, stack + STACK_SIZE,
-                           CLONE_VM | CLONE_VFORK, ctx);
+    child_pid = clone(ngx_http_cgi_child_proc,
+            spawn_vars.child_stack + STACK_SIZE,
+            CLONE_VM | CLONE_VFORK, &spawn_vars);
     if (child_pid == -1) {
         ngx_log_error(NGX_LOG_ERR, ctx->r->connection->log, ngx_errno,
                       "run cgi \"%V\" failed", &ctx->script);
@@ -590,9 +622,9 @@ ngx_http_cgi_spawn_child_process(ngx_http_cgi_ctx_t *ctx) {
 
     if (WEXITSTATUS(wstatus) != 0) {
         switch (WEXITSTATUS(wstatus)) {
-        case CHILD_PROCESS_VFORK_ERROR:
+        case CHILD_PROCESS_CLONE_2_ERROR:
             ngx_log_error(NGX_LOG_ERR, ctx->r->connection->log, 0,
-                        "spawn process vfork failed");
+                        "spawn process clone 2 failed");
             break;
         case CHILD_PROCESS_EXEC_ERROR:
             ngx_log_error(NGX_LOG_ERR, ctx->r->connection->log, 0,
@@ -615,8 +647,11 @@ ngx_http_cgi_spawn_child_process(ngx_http_cgi_ctx_t *ctx) {
     ctx->pipe_stdout[PIPE_WRITE_END] = -1;
 
 cleanup:
-    if (stack) {
-        free(stack);
+    if (spawn_vars.child_stack) {
+        free(spawn_vars.child_stack);
+    }
+    if (spawn_vars.grandchild_stack) {
+        free(spawn_vars.grandchild_stack);
     }
     return rc;
 }
