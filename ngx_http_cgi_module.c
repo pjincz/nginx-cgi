@@ -17,6 +17,10 @@
 #define PIPE_WRITE_END 1
 
 
+#define _strieq(str, exp) \
+    (ngx_strncasecmp((str).data, (u_char*)(exp), (str).len) == 0)
+
+
 typedef int pipe_pair_t[2];
 
 
@@ -47,7 +51,10 @@ typedef struct {
 
 typedef struct {
     ngx_http_request_t            *r;
+
     ngx_str_t                      script;
+    ngx_array_t                   *script_env;
+
     pipe_pair_t                    pipe_stdout;
     ngx_connection_t              *c_stdout;
 
@@ -174,7 +181,9 @@ static int ngx_http_cgi_child_proc(void *arg) {
 
     if (pid == 0) {
         // grandson process
-        if (execvp((char*)ctx->script.data, child_argv) == -1) {
+        // Do not use `p` version here, to avoid security issue
+        if (execve((char*)ctx->script.data, child_argv,
+                ctx->script_env->elts) == -1) {
             _exit(CHILD_PROCESS_EXEC_ERROR);
         }
 
@@ -185,6 +194,243 @@ static int ngx_http_cgi_child_proc(void *arg) {
         // TODO: report pid to parent process via pipe
         _exit(0);
     }
+}
+
+
+static ngx_int_t
+ngx_http_cgi_locate_script(ngx_http_cgi_ctx_t *ctx) {
+    ngx_http_request_t        *r = ctx->r;
+    ngx_http_core_loc_conf_t  *clcf;
+    size_t                     strip_prefix;
+    ngx_file_info_t            script_info;
+
+    clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
+    if (clcf == NULL) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+    ngx_log_debug3(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                   "uri: %V, alias: %d, root: %V", &r->uri,
+                   clcf->alias, &clcf->root);
+
+    ctx->script.data = ngx_palloc(r->pool, clcf->root.len + 1 + r->uri.len + 1);
+    ngx_memcpy(ctx->script.data, clcf->root.data, clcf->root.len);
+    ctx->script.len = clcf->root.len;
+
+    // append a tail / here, if clcf->root doesn't contains one
+    if (ctx->script.data[ctx->script.len - 1] != '/') {
+        ctx->script.data[ctx->script.len] = '/';
+        ctx->script.len += 1;
+    }
+
+    strip_prefix = clcf->alias;
+    if (strip_prefix > r->uri.len) {
+        // this should not happens
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+    // remove leading /s in uri
+    while (r->uri.data[strip_prefix] == '/') {
+        strip_prefix += 1;
+    }
+
+    // append uri to script path
+    memcpy(ctx->script.data + ctx->script.len, r->uri.data + strip_prefix,
+           r->uri.len - strip_prefix);
+    ctx->script.len += r->uri.len - strip_prefix;
+
+    // convert string to c string
+    ctx->script.data[ctx->script.len] = 0;
+
+    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                   "cgi script path: %V", &ctx->script);
+
+    if (ngx_file_info(ctx->script.data, &script_info) == -1) {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
+                      "run cgi \"%V\" failed", &ctx->script);
+        if (ngx_errno == EACCES) {
+            return NGX_HTTP_FORBIDDEN;
+        }
+        if (ngx_errno == ENOENT) {
+            return NGX_HTTP_NOT_FOUND;
+        }
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    if (!ngx_is_file(&script_info)) {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                "run cgi \"%V\" failed, not regular file", &ctx->script);
+        return NGX_HTTP_NOT_FOUND;
+    }
+
+    if (access((char*)ctx->script.data, X_OK) != 0) {
+        // no execute permission
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                "run cgi \"%V\" failed, no x permission", &ctx->script);
+        return NGX_HTTP_FORBIDDEN;
+    }
+
+    return NGX_OK;
+}
+
+
+#define _add_env_const(ctx, name, val) *(char**)ngx_array_push(ctx->script_env) = (name "=" val)
+static void _add_env_str(ngx_http_cgi_ctx_t *ctx, const char *name, const char *val, int val_len) {
+    char *line;
+    char *p;
+
+    int name_len = ngx_strlen(name);
+
+    if (val_len == -1) {
+        val_len = ngx_strlen(val);
+    }
+
+    p = line = ngx_palloc(ctx->r->pool, name_len + 1 + val_len + 1);
+
+    p = (char*)ngx_cpymem(p, name, name_len);
+    *p++ = '=';
+    p = (char*)ngx_cpymem(p, val, val_len);
+    *p = 0;
+
+    *(char**)ngx_array_push(ctx->script_env) = line;
+}
+static inline void _add_env_nstr(ngx_http_cgi_ctx_t *ctx, const char *name, ngx_str_t *str) {
+    _add_env_str(ctx, name, (char*)str->data, str->len);
+}
+static inline void _add_env_int(ngx_http_cgi_ctx_t *ctx, const char *name, int val) {
+    // int takes 11 characters at most
+    char buf[16];
+    sprintf(buf, "%d", val);
+    _add_env_str(ctx, name, buf, -1);
+}
+static inline void _add_env_addr(ngx_http_cgi_ctx_t *ctx, const char *name, struct sockaddr * sa, socklen_t socklen) {
+    ngx_int_t addr_len;
+    // max ipv6 is 39 bytes
+    // max sun_path is 108 bytes
+    u_char addr[128];
+
+    addr_len = ngx_sock_ntop(sa, socklen, addr, sizeof(addr), 0);
+    _add_env_str(ctx, name, (char*)addr, addr_len);
+}
+static inline ngx_flag_t _add_env_port(ngx_http_cgi_ctx_t *ctx, const char *name, struct sockaddr * sa) {
+    if (sa->sa_family == AF_INET) {
+        struct sockaddr_in *addr_in = (struct sockaddr_in *)sa;
+        int port = ntohs(addr_in->sin_port);
+        _add_env_int(ctx, name, port);
+        return 1;
+    } else if (sa->sa_family == AF_INET6) {
+        struct sockaddr_in6 *addr_in6 = (struct sockaddr_in6 *)sa;
+        int port = ntohs(addr_in6->sin6_port);
+        _add_env_int(ctx, name, port);
+        return 1;
+    }
+    return 0;
+}
+
+
+static ngx_int_t
+ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
+    // there's 17 standard vars in rfc 3875
+    // apache2 exports 24 vars by default
+    // 32 is a good choose, can fit all envs without resize in most cases
+    const int                  init_array_size = 32;
+    ngx_http_request_t        *r = ctx->r;
+    ngx_connection_t          *con = r->connection;
+    ngx_http_core_loc_conf_t  *clcf;
+    ngx_http_core_srv_conf_t  *srcf;
+
+    ngx_list_part_t           *part;
+    ngx_uint_t                 i;
+    ngx_table_elt_t           *v;
+
+    clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
+    if (clcf == NULL) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    srcf = ngx_http_get_module_srv_conf(r, ngx_http_core_module);
+    if (srcf == NULL) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    ctx->script_env = ngx_array_create(
+            ctx->r->pool, init_array_size, sizeof(char*));
+    if (ctx->script_env == NULL) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    _add_env_const(ctx, "GATEWAY_INTERFACE", "CGI/1.1");
+    _add_env_const(ctx, "PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
+
+    // TODO: should we convert DOCUMENT_ROOT to abs path here?
+    _add_env_nstr(ctx, "DOCUMENT_ROOT", &clcf->root);
+
+    _add_env_nstr(ctx, "QUERY_STRING", &r->args);
+
+    _add_env_addr(ctx, "REMOTE_ADDR", con->sockaddr, con->socklen);
+    _add_env_port(ctx, "REMOTE_PORT", con->sockaddr);
+
+    _add_env_nstr(ctx, "REQUEST_METHOD", &r->method_name);
+
+    // TODO: REQUEST_SCHEME not works
+    _add_env_nstr(ctx, "REQUEST_SCHEME", &r->schema);
+
+    // TODO: check whether `r->uri` changed by rewrite plugin
+    _add_env_nstr(ctx, "REQUEST_URI", &r->uri);
+    _add_env_nstr(ctx, "SCRIPT_NAME", &r->uri);
+
+    // TODO: should we convert SCRIPT_FILENAME to abs path here?
+    _add_env_nstr(ctx, "SCRIPT_FILENAME", &ctx->script);
+
+    // TODO: SERVER_ADDR returns 0.0.0.0, is different to apache's output
+    _add_env_addr(ctx, "SERVER_ADDR", con->local_sockaddr, con->local_socklen);
+    _add_env_port(ctx, "SERVER_PORT", con->local_sockaddr);
+
+    // TODO: SERVER_NAME not work
+    _add_env_nstr(ctx, "SERVER_NAME", &srcf->server_name);
+
+    _add_env_nstr(ctx, "SERVER_PROTOCOL", &r->http_protocol);
+
+    _add_env_const(ctx, "SERVER_SOFTWARE", "nginx/" NGINX_VERSION);
+
+    // go through incoming headers, and convert add them to env
+    part = &r->headers_in.headers.part;
+    v = part->elts;
+    for (i = 0;; ++i) {
+        if (i >= part->nelts) {
+            if (part->next == NULL) {
+                break;
+            }
+
+            part = part->next;
+            v = part->elts;
+            i = 0;
+        }
+
+        if (_strieq(v[i].key, "Accept")) {
+            _add_env_nstr(ctx, "HTTP_ACCEPT", &v[i].value);
+        } else if (_strieq(v[i].key, "Host")) {
+            _add_env_nstr(ctx, "HTTP_HOST", &v[i].value);
+        } else if (_strieq(v[i].key, "User-Agent")) {
+            _add_env_nstr(ctx, "HTTP_USER_AGENT", &v[i].value);
+        } else if ((v[i].key.data[0] == 'X' || v[i].key.data[0] == 'x')
+                   && v[i].key.data[1] == '-') {
+            // extension headers
+            u_char *name = ngx_palloc(r->pool, v[i].key.len + 1);
+            ngx_memcpy(name, v[i].key.data, v[i].key.len);
+            name[v[i].key.len] = 0;
+
+            // replace `-` with `_`, and convert to uppercase
+            for (size_t i = 0; i < v[i].key.len; ++i) {
+                name[i] = ngx_toupper(name[i]);
+                if (name[i] == '-') {
+                    name[i] = '_';
+                }
+            }
+
+            _add_env_nstr(ctx, (char*)name, &v[i].value);
+        }
+    }
+
+    return NGX_OK;
 }
 
 
@@ -527,10 +773,6 @@ header_done:
 
     return NGX_HTTP_PARSE_HEADER_DONE;
 }
-
-
-#define _strieq(str, exp) \
-    (ngx_strncasecmp((str).data, (u_char*)(exp), (str).len) == 0)
 
 
 static ngx_int_t
@@ -900,18 +1142,10 @@ static ngx_int_t
 ngx_http_cgi_handler(ngx_http_request_t *r)
 {
     ngx_int_t                  rc;
-    ngx_http_core_loc_conf_t  *clcf;
     ngx_http_cgi_ctx_t        *ctx;
-    size_t                     strip_prefix;
-    ngx_file_info_t            script_info;
 
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "http cgi handler");
-
-    clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
-    ngx_log_debug3(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
-                   "uri: %V, alias: %d, root: %V", &r->uri,
-                   clcf->alias, &clcf->root);
 
     ctx = ngx_http_get_module_ctx(r, ngx_http_cgi_module);
     if (ctx == NULL) {
@@ -924,65 +1158,19 @@ ngx_http_cgi_handler(ngx_http_request_t *r)
 
     ctx->r = r;
 
-    ctx->script.data = ngx_palloc(r->pool, clcf->root.len + 1 + r->uri.len + 1);
-    ngx_memcpy(ctx->script.data, clcf->root.data, clcf->root.len);
-    ctx->script.len = clcf->root.len;
-
-    // append a tail / here, if clcf->root doesn't contains one
-    if (ctx->script.data[ctx->script.len - 1] != '/') {
-        ctx->script.data[ctx->script.len] = '/';
-        ctx->script.len += 1;
-    }
-
-    strip_prefix = clcf->alias;
-    if (strip_prefix > r->uri.len) {
-        // this should not happens
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
-    }
-    // remove leading /s in uri
-    while (r->uri.data[strip_prefix] == '/') {
-        strip_prefix += 1;
-    }
-
-    // append uri to script path
-    memcpy(ctx->script.data + ctx->script.len, r->uri.data + strip_prefix,
-           r->uri.len - strip_prefix);
-    ctx->script.len += r->uri.len - strip_prefix;
-
-    // convert string to c string
-    ctx->script.data[ctx->script.len] = 0;
-
-    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
-                   "script path: %V", &ctx->script);
-
-    if (ngx_file_info(ctx->script.data, &script_info) == -1) {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
-                      "run cgi \"%V\" failed", &ctx->script);
-        if (ngx_errno == EACCES) {
-            return NGX_HTTP_FORBIDDEN;
-        }
-        if (ngx_errno == ENOENT) {
-            return NGX_HTTP_NOT_FOUND;
-        }
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
-    }
-
-    if (!ngx_is_file(&script_info)) {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                "run cgi \"%V\" failed, not regular file", &ctx->script);
-        return NGX_HTTP_NOT_FOUND;
-    }
-
-    if (access((char*)ctx->script.data, X_OK) != 0) {
-        // no execute permission
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                "run cgi \"%V\" failed, no x permission", &ctx->script);
-        return NGX_HTTP_FORBIDDEN;
+    rc = ngx_http_cgi_locate_script(ctx);
+    if (rc != NGX_OK) {
+        return rc;
     }
 
     // TODO: grab request body, and sent to CGI script
     if (ngx_http_discard_request_body(r) != NGX_OK) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    rc = ngx_http_cgi_prepare_env(ctx);
+    if (rc != NGX_OK) {
+        return rc;
     }
 
     rc = ngx_http_cgi_spawn_child_process(ctx);
