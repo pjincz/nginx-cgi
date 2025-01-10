@@ -56,7 +56,9 @@ typedef struct {
     ngx_str_t                      path_info;  // path sub script
     ngx_array_t                   *script_env;
 
+    pipe_pair_t                    pipe_stdin;
     pipe_pair_t                    pipe_stdout;
+    ngx_connection_t              *c_stdin;
     ngx_connection_t              *c_stdout;
 
     ngx_buf_t                      header_buf;
@@ -137,11 +139,21 @@ ngx_module_t  ngx_http_cgi_module = {
 static void
 ngx_http_cgi_ctx_cleanup(void *data) {
     ngx_http_cgi_ctx_t *ctx = data;
+    if (ctx->pipe_stdin[0] != -1) {
+        close(ctx->pipe_stdin[0]);
+    }
+    if (ctx->pipe_stdin[1] != -1) {
+        close(ctx->pipe_stdin[1]);
+    }
     if (ctx->pipe_stdout[0] != -1) {
         close(ctx->pipe_stdout[0]);
     }
     if (ctx->pipe_stdout[1] != -1) {
         close(ctx->pipe_stdout[1]);
+    }
+
+    if (ctx->c_stdin && !ctx->c_stdin->close) {
+        ngx_close_connection(ctx->c_stdin);
     }
     if (ctx->c_stdout && !ctx->c_stdout->close) {
         ngx_close_connection(ctx->c_stdout);
@@ -164,6 +176,8 @@ ngx_http_cgi_ctx_create(ngx_pool_t *pool) {
 
     cln->handler = ngx_http_cgi_ctx_cleanup;
 
+    ctx->pipe_stdin[0] = -1;
+    ctx->pipe_stdin[1] = -1;
     ctx->pipe_stdout[0] = -1;
     ctx->pipe_stdout[1] = -1;
 
@@ -179,8 +193,17 @@ static int ngx_http_cgi_child_proc(void *arg) {
     close(0);
     close(1);
     close(2);
+
+    // if there's no body, pipe_stdin will not created for saving fd
+    if (ctx->pipe_stdin[PIPE_READ_END] != -1) {
+        dup2(ctx->pipe_stdin[PIPE_READ_END], 0);
+        close(ctx->pipe_stdin[PIPE_READ_END]);
+        close(ctx->pipe_stdin[PIPE_WRITE_END]);
+    }
+
     dup2(ctx->pipe_stdout[PIPE_WRITE_END], 1);
     close(ctx->pipe_stdout[PIPE_READ_END]);
+    close(ctx->pipe_stdout[PIPE_WRITE_END]);
 
     // fork again to detch
     pid = vfork();
@@ -291,7 +314,7 @@ ngx_http_cgi_locate_script(ngx_http_cgi_ctx_t *ctx) {
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "cgi script path: %V", &ctx->script);
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
-                   "cgi script path: %V", &ctx->path_info);
+                   "cgi script path info: %V", &ctx->path_info);
 
     if (!ngx_is_file(&script_info)) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
@@ -507,6 +530,9 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
         }
     }
 
+    // after all, we need to append an null line
+    *(char**)ngx_array_push(ctx->script_env) = NULL;
+
     return NGX_OK;
 }
 
@@ -517,6 +543,15 @@ ngx_http_cgi_spawn_child_process(ngx_http_cgi_ctx_t *ctx) {
     pid_t child_pid = 0;
     int wstatus = 0;
     ngx_int_t rc = NGX_OK;
+
+    if (ctx->r->request_body->bufs) {
+        if (pipe(ctx->pipe_stdin) == -1) {
+            ngx_log_error(NGX_LOG_ERR, ctx->r->connection->log, ngx_errno,
+                    "pipe");
+            rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+            goto cleanup;
+        }
+    }
 
     if (pipe(ctx->pipe_stdout) == -1) {
         ngx_log_error(NGX_LOG_ERR, ctx->r->connection->log, ngx_errno, "pipe");
@@ -541,6 +576,8 @@ ngx_http_cgi_spawn_child_process(ngx_http_cgi_ctx_t *ctx) {
         rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
         goto cleanup;
     }
+    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, ctx->r->connection->log, 0,
+            "cgi spawn process: %d", child_pid);
 
     // child process will exit immediately after forking grandson
     //  __WCLONE is required to wait cloned process
@@ -570,6 +607,10 @@ ngx_http_cgi_spawn_child_process(ngx_http_cgi_ctx_t *ctx) {
         goto cleanup;
     }
 
+    if (ctx->pipe_stdin[PIPE_READ_END] != -1) {
+        close(ctx->pipe_stdin[PIPE_READ_END]);
+        ctx->pipe_stdin[PIPE_READ_END] = -1;
+    }
     close(ctx->pipe_stdout[PIPE_WRITE_END]);
     ctx->pipe_stdout[PIPE_WRITE_END] = -1;
 
@@ -956,7 +997,9 @@ ngx_http_cgi_scan_header(ngx_http_cgi_ctx_t *ctx) {
     if (r->headers_out.status_line.data == NULL) {
         r->headers_out.status = 200;
     }
-    
+
+    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+            "header ready");
     ctx->header_ready = 1;
     return NGX_OK;
 }
@@ -1170,6 +1213,55 @@ ngx_http_cgi_flush(ngx_http_cgi_ctx_t *ctx, ngx_flag_t eof) {
 
 
 static void
+ngx_http_cgi_stdin_data_handler(ngx_event_t *ev) {
+    ngx_connection_t   *c = ev->data;
+    ngx_http_cgi_ctx_t *ctx = c->data;
+    ngx_http_request_t *r = ctx->r;
+    ngx_buf_t          *buf;
+    ngx_flag_t          pipe_broken = 0;
+    ngx_flag_t          io_error = 0;
+
+    int nwrite;
+
+    while (r->request_body && r->request_body->bufs) {
+        buf = r->request_body->bufs->buf;
+        nwrite = write(c->fd, buf->pos, buf->last - buf->pos);
+        if (nwrite > 0) {
+            buf->pos += nwrite;
+            if (buf->pos == buf->last) {
+                r->request_body->bufs = r->request_body->bufs->next;
+            }
+        } else if (nwrite == 0) {
+            // io buf is full
+            break;
+        } else {
+            if (ngx_errno == EAGAIN) {
+                // io buf is full
+                break;
+            } else if (ngx_errno == EPIPE) {
+                // peer closed
+                ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log,
+                        ngx_errno, "stdin closed");
+                pipe_broken = 1;
+                break;
+            } else {
+                ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
+                        "stdin write");
+                io_error = 1;
+                break;
+            }
+        }
+    }
+
+    if (!r->request_body->bufs || pipe_broken || io_error) {
+        ngx_close_connection(c);
+    } else {
+        ngx_handle_write_event(ctx->c_stdin->write, 0);
+    }
+}
+
+
+static void
 ngx_http_cgi_stdout_data_handler(ngx_event_t *ev) {
     ngx_connection_t   *c = ev->data;
     ngx_http_cgi_ctx_t *ctx = c->data;
@@ -1215,50 +1307,83 @@ error:
 }
 
 
-static ngx_int_t
-ngx_http_cgi_handler(ngx_http_request_t *r)
-{
+void
+ngx_http_cgi_handle_init(ngx_http_request_t *r) {
     ngx_int_t                  rc;
     ngx_http_cgi_ctx_t        *ctx;
 
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
-                   "http cgi handler");
+                   "http cgi handle init");
 
     ctx = ngx_http_get_module_ctx(r, ngx_http_cgi_module);
     if (ctx == NULL) {
         ctx = ngx_http_cgi_ctx_create(r->pool);
         if (ctx == NULL) {
-            return NGX_HTTP_INTERNAL_SERVER_ERROR;
+            rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+            goto error;
         }
-        // ngx_http_set_ctx(r, ctx, ngx_http_cgi_module);
+        ngx_http_set_ctx(r, ctx, ngx_http_cgi_module);
     }
 
     ctx->r = r;
 
-    rc = ngx_http_cgi_locate_script(ctx);
-    if (rc != NGX_OK) {
-        return rc;
+    ctx = ngx_http_get_module_ctx(r, ngx_http_cgi_module);
+    if (ctx == NULL) {
+        rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+        goto error;
     }
 
-    // TODO: grab request body, and sent to CGI script
-    if (ngx_http_discard_request_body(r) != NGX_OK) {
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    rc = ngx_http_cgi_locate_script(ctx);
+    if (rc != NGX_OK) {
+        goto error;
     }
 
     rc = ngx_http_cgi_prepare_env(ctx);
     if (rc != NGX_OK) {
-        return rc;
+        goto error;
     }
 
     rc = ngx_http_cgi_spawn_child_process(ctx);
     if (rc != NGX_OK) {
-        return rc;
+        goto error;
     }
 
+    // setup stdin handler
+    if (ctx->pipe_stdin[PIPE_WRITE_END] != -1) {
+        if (ngx_nonblocking(ctx->pipe_stdin[PIPE_WRITE_END]) == -1) {
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
+                    "ngx_nonblocking");
+            rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+            goto error;
+        }
+        ctx->c_stdin = ngx_get_connection(ctx->pipe_stdin[PIPE_WRITE_END],
+                                          r->connection->log);
+        if (ctx->c_stdin) {
+            ctx->pipe_stdin[PIPE_WRITE_END] = -1;
+        } else {
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
+                    "ngx_get_connection");
+            rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+            goto error;
+        }
+
+        ctx->c_stdin->data = ctx;
+        ctx->c_stdin->type = SOCK_STREAM;
+
+        ctx->c_stdin->write->handler = ngx_http_cgi_stdin_data_handler;
+        ctx->c_stdin->write->log = r->connection->log;
+        if (ngx_handle_write_event(ctx->c_stdin->write, 0) != NGX_OK) {
+            rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+            goto error;
+        }
+    }
+
+    // setup stdout handler
     if (ngx_nonblocking(ctx->pipe_stdout[PIPE_READ_END]) == -1) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
                 "ngx_nonblocking");
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+        goto error;
     }
     ctx->c_stdout = ngx_get_connection(ctx->pipe_stdout[PIPE_READ_END],
                                        r->connection->log);
@@ -1267,7 +1392,8 @@ ngx_http_cgi_handler(ngx_http_request_t *r)
     } else {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
                 "ngx_get_connection");
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+        goto error;
     }
 
     ctx->c_stdout->data = ctx;
@@ -1276,10 +1402,28 @@ ngx_http_cgi_handler(ngx_http_request_t *r)
     ctx->c_stdout->read->handler = ngx_http_cgi_stdout_data_handler;
     ctx->c_stdout->read->log = r->connection->log;
     if (ngx_handle_read_event(ctx->c_stdout->read, 0) != NGX_OK) {
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+        goto error;
     }
 
-    r->main->count += 1;
+    return;
+
+error:
+    ngx_http_finalize_request(r, rc);
+    return;
+}
+
+
+static ngx_int_t
+ngx_http_cgi_handler(ngx_http_request_t *r)
+{
+    ngx_int_t  rc;
+
+    rc = ngx_http_read_client_request_body(r, ngx_http_cgi_handle_init);
+    if (rc >= NGX_HTTP_SPECIAL_RESPONSE) {
+        return rc;
+    }
+
     return NGX_DONE;
 }
 
