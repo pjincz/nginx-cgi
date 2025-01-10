@@ -26,6 +26,7 @@ typedef int pipe_pair_t[2];
 
 typedef struct {
     ngx_flag_t enabled;
+    ngx_str_t  path;
 } ngx_http_cgi_loc_conf_t;
 
 
@@ -78,10 +79,17 @@ static char *ngx_http_cgi_merge_loc_conf(ngx_conf_t *cf, void *parent,
 static ngx_command_t  ngx_http_cgi_commands[] = {
 
     { ngx_string("cgi"),
-      NGX_HTTP_LOC_CONF|NGX_CONF_FLAG,
+      NGX_HTTP_LOC_CONF | NGX_CONF_FLAG,
       ngx_conf_set_flag_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_cgi_loc_conf_t, enabled),
+      NULL },
+
+    { ngx_string("cgi_path"),
+      NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+      ngx_conf_set_str_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_cgi_loc_conf_t, path),
       NULL },
 
     // TODO: add following symbolic link?
@@ -334,12 +342,18 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
     const int                  init_array_size = 32;
     ngx_http_request_t        *r = ctx->r;
     ngx_connection_t          *con = r->connection;
+    ngx_http_cgi_loc_conf_t   *cgi_lcf;
     ngx_http_core_loc_conf_t  *clcf;
     ngx_http_core_srv_conf_t  *srcf;
 
     ngx_list_part_t           *part;
     ngx_uint_t                 i;
     ngx_table_elt_t           *v;
+
+    cgi_lcf = ngx_http_get_module_loc_conf(r, ngx_http_cgi_module);
+    if (cgi_lcf == NULL) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
 
     clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
     if (clcf == NULL) {
@@ -358,7 +372,8 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
     }
 
     _add_env_const(ctx, "GATEWAY_INTERFACE", "CGI/1.1");
-    _add_env_const(ctx, "PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
+
+    _add_env_nstr(ctx, "PATH", &cgi_lcf->path);
 
     // TODO: should we convert DOCUMENT_ROOT to abs path here?
     _add_env_nstr(ctx, "DOCUMENT_ROOT", &clcf->root);
@@ -1230,6 +1245,8 @@ ngx_http_cgi_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_http_cgi_loc_conf_t *conf = child;
 
     ngx_conf_merge_value(conf->enabled, prev->enabled, 0);
+    ngx_conf_merge_str_value(conf->path, prev->path,
+            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
 
     if (conf->enabled) {
         ngx_http_core_loc_conf_t  *clcf;
