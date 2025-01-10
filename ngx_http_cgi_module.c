@@ -163,7 +163,6 @@ static ngx_command_t  ngx_http_cgi_commands[] = {
     },
 
     // TODO: add following symbolic link?
-    // TODO: add cgi_index to generate content for directory?
     // TODO: add cgi_detailed_error_page?
 
       ngx_null_command
