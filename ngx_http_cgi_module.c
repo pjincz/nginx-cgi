@@ -25,9 +25,10 @@ typedef int pipe_pair_t[2];
 
 
 typedef struct {
-    ngx_flag_t enabled;
-    ngx_str_t  path;
-    ngx_flag_t strict_mode;
+    ngx_flag_t   enabled;
+    ngx_str_t    path;
+    ngx_flag_t   strict_mode;
+    ngx_array_t *interpreter;  // array<char *>
 } ngx_http_cgi_loc_conf_t;
 
 
@@ -54,9 +55,15 @@ typedef struct {
     ngx_http_request_t            *r;
     ngx_http_cgi_loc_conf_t       *conf;
 
-    ngx_str_t                      script;
-    ngx_str_t                      path_info;  // path sub script
-    ngx_array_t                   *script_env;
+    // script contains the path to the script, path_info contains the sub path
+    // eg: http://127.0.0.1/cgi-bin/a.sh/this/is/subpath => 
+    //     script: $document_root/cgi-bin/a.sh
+    //     path_info: /this/is/subpath
+    ngx_str_t                      script;      // c compatible
+    ngx_str_t                      path_info;   // path sub script
+
+    ngx_array_t                   *cmd;         // array<char*> with tail null
+    ngx_array_t                   *env;         // array<char*> with tail null
 
     pipe_pair_t                    pipe_stdin;
     pipe_pair_t                    pipe_stdout;
@@ -83,8 +90,10 @@ typedef struct {
 
 static ngx_int_t ngx_http_cgi_handler(ngx_http_request_t *r);
 static void *ngx_http_cgi_create_loc_conf(ngx_conf_t *cf);
-static char *ngx_http_cgi_merge_loc_conf(ngx_conf_t *cf, void *parent,
-    void *child);
+static char *ngx_http_cgi_merge_loc_conf(
+    ngx_conf_t *cf, void *parent, void *child);
+static char * ngx_http_cgi_set_interpreter(
+    ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 
 
 static ngx_command_t  ngx_http_cgi_commands[] = {
@@ -124,8 +133,20 @@ static ngx_command_t  ngx_http_cgi_commands[] = {
         NULL
     },
 
+    // Set interpreter and interpreter args for cgi script
+    // When this option is not empty, cgi script will be run be giving
+    // interpreter. Otherwise, script will be executed directly.
+    // Default: empty
+    {
+        ngx_string("cgi_interpreter"),
+        NGX_HTTP_LOC_CONF | NGX_CONF_ANY,
+        ngx_http_cgi_set_interpreter,
+        NGX_HTTP_LOC_CONF_OFFSET,
+        offsetof(ngx_http_cgi_loc_conf_t, interpreter),
+        NULL
+    },
+
     // TODO: add following symbolic link?
-    // TODO: add cgi_interpreter
     // TODO: add cgi_x_only
     // TODO: add cgi_index to generate content for directory?
     // TODO: add cgi_detailed_error_page?
@@ -216,11 +237,11 @@ ngx_http_cgi_ctx_create(ngx_pool_t *pool) {
 
 static int ngx_http_cgi_grandchild_proc(void *arg) {
     ngx_http_cgi_ctx_t *ctx = arg;
-    char *child_argv[] = {NULL};
+    char **cmd = ctx->cmd->elts;
+    char **env = ctx->env->elts;
 
     // Do not use `p` version here, to avoid security issue
-    if (execve((char*)ctx->script.data, child_argv,
-            ctx->script_env->elts) == -1) {
+    if (execve(cmd[0], cmd, env) == -1) {
         _exit(CHILD_PROCESS_EXEC_ERROR);
     }
 
@@ -384,7 +405,33 @@ ngx_http_cgi_locate_script(ngx_http_cgi_ctx_t *ctx) {
 }
 
 
-#define _add_env_const(ctx, name, val) *(char**)ngx_array_push(ctx->script_env) = (name "=" val)
+static ngx_int_t
+ngx_http_cgi_prepare_cmd(ngx_http_cgi_ctx_t *ctx) {
+    int cmd_list_size = ctx->conf->interpreter ?
+            ctx->conf->interpreter->nelts + 2 : 2;
+
+    ctx->cmd = ngx_array_create(ctx->r->pool, cmd_list_size, sizeof(char*));
+    if (ctx->cmd == NULL) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    if (ctx->conf->interpreter) {
+        ngx_memcpy(
+            ngx_array_push_n(ctx->cmd, ctx->conf->interpreter->nelts),
+            ctx->conf->interpreter->elts,
+            sizeof(char *) * ctx->conf->interpreter->nelts);
+    }
+
+    *(u_char**)ngx_array_push(ctx->cmd) = ctx->script.data;
+
+    // an extra NULL string, required by exec
+    *(u_char**)ngx_array_push(ctx->cmd) = NULL;
+
+    return NGX_OK;
+}
+
+
+#define _add_env_const(ctx, name, val) *(char**)ngx_array_push(ctx->env) = (name "=" val)
 static void _add_env_str(ngx_http_cgi_ctx_t *ctx, const char *name, const char *val, int val_len) {
     char *line;
     char *p;
@@ -402,7 +449,7 @@ static void _add_env_str(ngx_http_cgi_ctx_t *ctx, const char *name, const char *
     p = (char*)ngx_cpymem(p, val, val_len);
     *p = 0;
 
-    *(char**)ngx_array_push(ctx->script_env) = line;
+    *(char**)ngx_array_push(ctx->env) = line;
 }
 static inline void _add_env_nstr(ngx_http_cgi_ctx_t *ctx, const char *name, ngx_str_t *str) {
     _add_env_str(ctx, name, (char*)str->data, str->len);
@@ -471,9 +518,9 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
         local_addr_len = 0;
     }
 
-    ctx->script_env = ngx_array_create(
+    ctx->env = ngx_array_create(
             ctx->r->pool, init_array_size, sizeof(char*));
-    if (ctx->script_env == NULL) {
+    if (ctx->env == NULL) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
@@ -575,8 +622,8 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
         }
     }
 
-    // after all, we need to append an null line
-    *(char**)ngx_array_push(ctx->script_env) = NULL;
+    // an extra null string, required by exec
+    *(char**)ngx_array_push(ctx->env) = NULL;
 
     return NGX_OK;
 }
@@ -1373,6 +1420,11 @@ ngx_http_cgi_handle_init(ngx_http_request_t *r) {
         goto error;
     }
 
+    rc = ngx_http_cgi_prepare_cmd(ctx);
+    if (rc != NGX_OK) {
+        goto error;
+    }
+
     rc = ngx_http_cgi_prepare_env(ctx);
     if (rc != NGX_OK) {
         goto error;
@@ -1463,6 +1515,39 @@ ngx_http_cgi_handler(ngx_http_request_t *r)
     return NGX_DONE;
 }
 
+static char *
+ngx_http_cgi_set_interpreter(ngx_conf_t *cf, ngx_command_t *cmd, void *c) {
+    ngx_http_cgi_loc_conf_t  *conf = c;
+    ngx_str_t                *args = cf->args->elts;
+
+    if (conf->interpreter != NGX_CONF_UNSET_PTR) {
+        return "is duplicate";
+    }
+
+    conf->interpreter = ngx_array_create(
+            cf->pool, cf->args->nelts - 1, sizeof(char *));
+    if (conf->interpreter == NULL) {
+        return NGX_CONF_ERROR;
+    }
+
+    for (uint i = 1; i < cf->args->nelts; ++i) {
+        u_char **pstr = (u_char**)ngx_array_push(conf->interpreter);
+        if (pstr == NULL) {
+            return NGX_CONF_ERROR;
+        }
+
+        *pstr = ngx_palloc(cf->pool, args[i].len + 1);
+        if (*pstr == NULL) {
+            return NGX_CONF_ERROR;
+        }
+
+        ngx_memcpy(*pstr, args[i].data, args[i].len);
+        (*pstr)[args[i].len] = 0;
+    }
+
+    return NGX_CONF_OK;
+}
+
 
 static void *
 ngx_http_cgi_create_loc_conf(ngx_conf_t *cf)
@@ -1477,6 +1562,7 @@ ngx_http_cgi_create_loc_conf(ngx_conf_t *cf)
     conf->enabled = NGX_CONF_UNSET;
     // conf->path is initialized by ngx_pcalloc
     conf->strict_mode = NGX_CONF_UNSET;
+    conf->interpreter = NGX_CONF_UNSET_PTR;
 
     return conf;
 }
@@ -1492,6 +1578,7 @@ ngx_http_cgi_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_conf_merge_str_value(conf->path, prev->path,
             "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
     ngx_conf_merge_value(conf->strict_mode, prev->strict_mode, 1);
+    ngx_conf_merge_ptr_value(conf->interpreter, prev->interpreter, NULL);
 
     if (conf->enabled) {
         ngx_http_core_loc_conf_t  *clcf;
