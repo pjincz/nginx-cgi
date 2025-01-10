@@ -346,6 +346,9 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
     ngx_http_core_loc_conf_t  *clcf;
     ngx_http_core_srv_conf_t  *srcf;
 
+    struct sockaddr_storage    local_addr;
+    socklen_t                  local_addr_len;
+
     ngx_list_part_t           *part;
     ngx_uint_t                 i;
     ngx_table_elt_t           *v;
@@ -363,6 +366,11 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
     srcf = ngx_http_get_module_srv_conf(r, ngx_http_core_module);
     if (srcf == NULL) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    local_addr_len = sizeof(local_addr);
+    if (getsockname(con->fd, (void *)&local_addr, &local_addr_len) == -1) {
+        local_addr_len = 0;
     }
 
     ctx->script_env = ngx_array_create(
@@ -399,17 +407,16 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
     // TODO: should we convert SCRIPT_FILENAME to abs path here?
     _add_env_nstr(ctx, "SCRIPT_FILENAME", &ctx->script);
 
-    {
-        struct sockaddr_storage addr;
-        socklen_t addr_len = sizeof(addr);
-        if (getsockname(con->fd, (struct sockaddr *)&addr, &addr_len) != -1) {
-            _add_env_addr(ctx, "SERVER_ADDR", (void*)&addr, addr_len);
-            _add_env_port(ctx, "SERVER_PORT", (void*)&addr);
-        }
+    if (local_addr_len > 0) {
+        _add_env_addr(ctx, "SERVER_ADDR", (void*)&local_addr, local_addr_len);
+        _add_env_port(ctx, "SERVER_PORT", (void*)&local_addr);
     }
 
-    // TODO: SERVER_NAME not work
-    _add_env_nstr(ctx, "SERVER_NAME", &srcf->server_name);
+    if (srcf->server_name.len > 0) {
+        _add_env_nstr(ctx, "SERVER_NAME", &srcf->server_name);
+    } else if (local_addr_len > 0) {
+        _add_env_addr(ctx, "SERVER_NAME", (void*)&local_addr, local_addr_len);
+    }
 
     _add_env_nstr(ctx, "SERVER_PROTOCOL", &r->http_protocol);
 
