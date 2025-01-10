@@ -400,8 +400,9 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
         _add_env_const(ctx, "REQUEST_SCHEME", "http");
     }
 
-    // TODO: check whether `r->uri` changed by rewrite plugin
-    _add_env_nstr(ctx, "REQUEST_URI", &r->uri);
+    // unparsed_uri stores uri before rewriting
+    // uri stores uri after rewriting
+    _add_env_nstr(ctx, "REQUEST_URI", &r->unparsed_uri);
     _add_env_nstr(ctx, "SCRIPT_NAME", &r->uri);
 
     // TODO: should we convert SCRIPT_FILENAME to abs path here?
