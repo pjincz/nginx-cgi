@@ -1741,11 +1741,18 @@ ngx_http_cgi_set_interpreter(ngx_conf_t *cf, ngx_command_t *cmd, void *c) {
 }
 
 
+static void
+ngx_http_cgi_close_fd(void *data) {
+    close((ngx_int_t)data);
+}
+
+
 static char *
 ngx_http_cgi_set_stderr(ngx_conf_t *cf, ngx_command_t *cmd, void *c) {
     ngx_http_cgi_loc_conf_t  *conf = c;
     ngx_str_t                *args = cf->args->elts;
     char                     *fpath;
+    ngx_pool_cleanup_t       *cln;
 
     if (conf->cgi_stderr != CGI_STDERR_UNSET) {
         return "is duplicate";
@@ -1761,7 +1768,15 @@ ngx_http_cgi_set_stderr(ngx_conf_t *cf, ngx_command_t *cmd, void *c) {
             free(fpath);
             return "fail to open file";
         }
-        // TODO: clean up fd when conf reload
+
+        // I'm not 100% sure whether following code works.
+        // Because when I wrote it, the latest nginx version has issue with
+        // old cycle cleanup, and can never cleanup old cycle.
+        // so I can't test it, may god bless you
+        cln = ngx_pool_cleanup_add(cf->pool, 0);
+        cln->data = (void*)(ngx_int_t)conf->cgi_stderr;
+        cln->handler = ngx_http_cgi_close_fd;
+
         free(fpath);
     }
 
