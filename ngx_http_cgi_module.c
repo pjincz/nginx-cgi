@@ -547,7 +547,6 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
 
     _add_env_nstr(ctx, "PATH", &ctx->conf->path);
 
-    // TODO: should we convert DOCUMENT_ROOT to abs path here?
     _add_env_nstr(ctx, "DOCUMENT_ROOT", &clcf->root);
 
     _add_env_nstr(ctx, "QUERY_STRING", &r->args);
@@ -569,7 +568,6 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
     _add_env_nstr(ctx, "REQUEST_URI", &r->unparsed_uri);
     _add_env_nstr(ctx, "SCRIPT_NAME", &r->uri);
 
-    // TODO: should we convert SCRIPT_FILENAME to abs path here?
     _add_env_nstr(ctx, "SCRIPT_FILENAME", &ctx->script);
 
     if (local_addr_len > 0) {
