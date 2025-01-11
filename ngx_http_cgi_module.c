@@ -68,8 +68,11 @@ typedef struct {
 
     pipe_pair_t                    pipe_stdin;
     pipe_pair_t                    pipe_stdout;
+    pipe_pair_t                    pipe_stderr;
+
     ngx_connection_t              *c_stdin;
     ngx_connection_t              *c_stdout;
+    ngx_connection_t              *c_stderr;
 
     ngx_buf_t                      header_buf;
     ngx_http_cgi_header_scan_t     header_scan;
@@ -220,12 +223,21 @@ ngx_http_cgi_ctx_cleanup(void *data) {
     if (ctx->pipe_stdout[1] != -1) {
         close(ctx->pipe_stdout[1]);
     }
+    if (ctx->pipe_stderr[0] != -1) {
+        close(ctx->pipe_stderr[0]);
+    }
+    if (ctx->pipe_stderr[1] != -1) {
+        close(ctx->pipe_stderr[1]);
+    }
 
     if (ctx->c_stdin) {
         ngx_close_connection(ctx->c_stdin);
     }
     if (ctx->c_stdout) {
         ngx_close_connection(ctx->c_stdout);
+    }
+    if (ctx->c_stderr) {
+        ngx_close_connection(ctx->c_stderr);
     }
 }
 
@@ -249,6 +261,8 @@ ngx_http_cgi_ctx_create(ngx_pool_t *pool) {
     ctx->pipe_stdin[1] = -1;
     ctx->pipe_stdout[0] = -1;
     ctx->pipe_stdout[1] = -1;
+    ctx->pipe_stderr[0] = -1;
+    ctx->pipe_stderr[1] = -1;
 
     return ctx;
 }
@@ -283,13 +297,17 @@ static int ngx_http_cgi_child_proc(void *arg) {
     // if there's no body, pipe_stdin will not created for saving fd
     if (ctx->pipe_stdin[PIPE_READ_END] != -1) {
         dup2(ctx->pipe_stdin[PIPE_READ_END], 0);
-        close(ctx->pipe_stdin[PIPE_READ_END]);
-        close(ctx->pipe_stdin[PIPE_WRITE_END]);
     }
 
     dup2(ctx->pipe_stdout[PIPE_WRITE_END], 1);
-    close(ctx->pipe_stdout[PIPE_READ_END]);
-    close(ctx->pipe_stdout[PIPE_WRITE_END]);
+
+    dup2(ctx->pipe_stderr[PIPE_WRITE_END], 2);
+
+    // close all fds >= 3 to prevent inherit connection from nginx
+    // this is important, because nginx doesn't mark all connections as
+    // close on fork. as a result, a long run cgi script will take ownship
+    // of connections it closed by nginx, and causes client hangs.
+    closefrom(3);
 
     // fork again to detch
     // again we cannot use fork/vfork here. The forked child process still
@@ -670,6 +688,12 @@ ngx_http_cgi_spawn_child_process(ngx_http_cgi_ctx_t *ctx) {
         goto cleanup;
     }
 
+    if (pipe(ctx->pipe_stderr) == -1) {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno, "pipe");
+        rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+        goto cleanup;
+    }
+
     spawn_vars.ctx = ctx;
     spawn_vars.child_stack = malloc(STACK_SIZE);
     spawn_vars.grandchild_stack = malloc(STACK_SIZE);
@@ -726,6 +750,8 @@ ngx_http_cgi_spawn_child_process(ngx_http_cgi_ctx_t *ctx) {
     }
     close(ctx->pipe_stdout[PIPE_WRITE_END]);
     ctx->pipe_stdout[PIPE_WRITE_END] = -1;
+    close(ctx->pipe_stderr[PIPE_WRITE_END]);
+    ctx->pipe_stderr[PIPE_WRITE_END] = -1;
 
 cleanup:
     if (spawn_vars.child_stack) {
@@ -1421,6 +1447,8 @@ ngx_http_cgi_stdout_data_handler(ngx_event_t *ev) {
         } else if (nread == 0) {
             // end of file
             ngx_http_finalize_request(r, ngx_http_cgi_flush(ctx, 1));
+            ngx_close_connection(ctx->c_stdout);
+            ctx->c_stdout = NULL;
             return;
         } else {
             if (ngx_errno == EAGAIN) {
@@ -1444,6 +1472,38 @@ ngx_http_cgi_stdout_data_handler(ngx_event_t *ev) {
 error:
     ngx_http_finalize_request(r, rc);
     return;
+}
+
+
+static void
+ngx_http_cgi_stderr_data_handler(ngx_event_t *ev) {
+    ngx_connection_t   *c = ev->data;
+    ngx_http_cgi_ctx_t *ctx = c->data;
+    ngx_http_request_t *r = ctx->r;
+
+    u_char buf[65536];
+    int nread;
+
+    for (;;) {
+        nread = read(c->fd, buf, sizeof(buf));
+        if (nread > 0) {
+            ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+                    "cgi stderr: %*s", nread, buf);
+        } else if (nread == 0) {
+            // end of file
+            ngx_close_connection(ctx->c_stderr);
+            ctx->c_stderr = NULL;
+            return;
+        } else {
+            if (ngx_errno == EAGAIN) {
+                // wait for more data
+                ngx_handle_read_event(ctx->c_stderr->read, 0);
+                return;
+            } else {
+                return;
+            }
+        }
+    }
 }
 
 
@@ -1553,6 +1613,34 @@ ngx_http_cgi_handle_init(ngx_http_request_t *r) {
     ctx->c_stdout->read->handler = ngx_http_cgi_stdout_data_handler;
     ctx->c_stdout->read->log = r->connection->log;
     if (ngx_handle_read_event(ctx->c_stdout->read, 0) != NGX_OK) {
+        rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+        goto error;
+    }
+
+    // setup stderr handler
+    if (ngx_nonblocking(ctx->pipe_stderr[PIPE_READ_END]) == -1) {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
+                "ngx_nonblocking");
+        rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+        goto error;
+    }
+    ctx->c_stderr = ngx_get_connection(ctx->pipe_stderr[PIPE_READ_END],
+                                       r->connection->log);
+    if (ctx->c_stderr) {
+        ctx->pipe_stderr[PIPE_READ_END] = -1;
+    } else {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
+                "ngx_get_connection");
+        rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+        goto error;
+    }
+
+    ctx->c_stderr->data = ctx;
+    ctx->c_stderr->type = SOCK_STREAM;
+
+    ctx->c_stderr->read->handler = ngx_http_cgi_stderr_data_handler;
+    ctx->c_stderr->read->log = r->connection->log;
+    if (ngx_handle_read_event(ctx->c_stderr->read, 0) != NGX_OK) {
         rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
         goto error;
     }
