@@ -7,14 +7,18 @@
 #include <ngx_config.h>
 #include <ngx_core.h>
 #include <ngx_http.h>
+#include <assert.h>
 
 
 #define STACK_SIZE                  4096
 #define CHILD_PROCESS_CLONE_2_ERROR 1
 #define CHILD_PROCESS_EXEC_ERROR    2
 
-#define PIPE_READ_END 0
-#define PIPE_WRITE_END 1
+#define PIPE_READ_END      0
+#define PIPE_WRITE_END     1
+
+#define CGI_STDERR_UNSET  -1
+#define CGI_STDERR_PIPE   -2
 
 
 #define _strieq(str, exp) \
@@ -30,6 +34,7 @@ typedef struct {
     ngx_flag_t   strict_mode;
     ngx_array_t *interpreter;  // array<char *>
     ngx_flag_t   x_only;
+    ngx_fd_t     cgi_stderr;
 } ngx_http_cgi_loc_conf_t;
 
 
@@ -97,6 +102,8 @@ static void *ngx_http_cgi_create_loc_conf(ngx_conf_t *cf);
 static char *ngx_http_cgi_merge_loc_conf(
     ngx_conf_t *cf, void *parent, void *child);
 static char * ngx_http_cgi_set_interpreter(
+    ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+static char * ngx_http_cgi_set_stderr(
     ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 
 static char *ngx_http_cgi_enable_post(ngx_conf_t *cf, void *post, void *data);
@@ -167,6 +174,23 @@ static ngx_command_t  ngx_http_cgi_commands[] = {
         ngx_conf_set_flag_slot,
         NGX_HTTP_LOC_CONF_OFFSET,
         offsetof(ngx_http_cgi_loc_conf_t, x_only),
+        NULL
+    },
+
+    // Redirect cgi stderr to giving file
+    // By default, nginx-cgi grab cgi script's stderr output and dump it to
+    // nginx log. But this action is somewhat expensive, because it need to
+    // create an extra connection to listen stderr output. If you want to avoid
+    // this, you can use this option to redirect cgi script's stderr output to a
+    // file. Or you can even discard all stderr output by redirect to
+    // `/dev/null`. Also you can use this to redirect all stderr output to
+    // nginx's stderr by set it as `/dev/stderr`.
+    {
+        ngx_string("cgi_stderr"),
+        NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+        ngx_http_cgi_set_stderr,
+        NGX_HTTP_LOC_CONF_OFFSET,
+        offsetof(ngx_http_cgi_loc_conf_t, cgi_stderr),
         NULL
     },
 
@@ -301,11 +325,15 @@ static int ngx_http_cgi_child_proc(void *arg) {
 
     dup2(ctx->pipe_stdout[PIPE_WRITE_END], 1);
 
-    dup2(ctx->pipe_stderr[PIPE_WRITE_END], 2);
+    if (ctx->conf->cgi_stderr >= 0) {
+        dup2(ctx->conf->cgi_stderr, 2);
+    } else if (ctx->pipe_stderr[PIPE_WRITE_END] >= 0) {
+        dup2(ctx->pipe_stderr[PIPE_WRITE_END], 2);
+    }
 
     // close all fds >= 3 to prevent inherit connection from nginx
-    // this is important, because nginx doesn't mark all connections as
-    // close on fork. as a result, a long run cgi script will take ownship
+    // this is important, because nginx doesn't mark all connections with
+    // O_CLOEXEC. as a result, a long run cgi script will take ownship
     // of connections it closed by nginx, and causes client hangs.
     closefrom(3);
 
@@ -688,10 +716,12 @@ ngx_http_cgi_spawn_child_process(ngx_http_cgi_ctx_t *ctx) {
         goto cleanup;
     }
 
-    if (pipe(ctx->pipe_stderr) == -1) {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno, "pipe");
-        rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-        goto cleanup;
+    if (ctx->conf->cgi_stderr == CGI_STDERR_PIPE) {
+        if (pipe(ctx->pipe_stderr) == -1) {
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno, "pipe");
+            rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+            goto cleanup;
+        }
     }
 
     spawn_vars.ctx = ctx;
@@ -1590,59 +1620,63 @@ ngx_http_cgi_handle_init(ngx_http_request_t *r) {
     }
 
     // setup stdout handler
-    if (ngx_nonblocking(ctx->pipe_stdout[PIPE_READ_END]) == -1) {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
-                "ngx_nonblocking");
-        rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-        goto error;
-    }
-    ctx->c_stdout = ngx_get_connection(ctx->pipe_stdout[PIPE_READ_END],
-                                       r->connection->log);
-    if (ctx->c_stdout) {
-        ctx->pipe_stdout[PIPE_READ_END] = -1;
-    } else {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
-                "ngx_get_connection");
-        rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-        goto error;
-    }
+    if (ctx->pipe_stdout[PIPE_READ_END] != -1) {
+        if (ngx_nonblocking(ctx->pipe_stdout[PIPE_READ_END]) == -1) {
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
+                    "ngx_nonblocking");
+            rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+            goto error;
+        }
+        ctx->c_stdout = ngx_get_connection(ctx->pipe_stdout[PIPE_READ_END],
+                                        r->connection->log);
+        if (ctx->c_stdout) {
+            ctx->pipe_stdout[PIPE_READ_END] = -1;
+        } else {
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
+                    "ngx_get_connection");
+            rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+            goto error;
+        }
 
-    ctx->c_stdout->data = ctx;
-    ctx->c_stdout->type = SOCK_STREAM;
+        ctx->c_stdout->data = ctx;
+        ctx->c_stdout->type = SOCK_STREAM;
 
-    ctx->c_stdout->read->handler = ngx_http_cgi_stdout_data_handler;
-    ctx->c_stdout->read->log = r->connection->log;
-    if (ngx_handle_read_event(ctx->c_stdout->read, 0) != NGX_OK) {
-        rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-        goto error;
+        ctx->c_stdout->read->handler = ngx_http_cgi_stdout_data_handler;
+        ctx->c_stdout->read->log = r->connection->log;
+        if (ngx_handle_read_event(ctx->c_stdout->read, 0) != NGX_OK) {
+            rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+            goto error;
+        }
     }
 
     // setup stderr handler
-    if (ngx_nonblocking(ctx->pipe_stderr[PIPE_READ_END]) == -1) {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
-                "ngx_nonblocking");
-        rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-        goto error;
-    }
-    ctx->c_stderr = ngx_get_connection(ctx->pipe_stderr[PIPE_READ_END],
-                                       r->connection->log);
-    if (ctx->c_stderr) {
-        ctx->pipe_stderr[PIPE_READ_END] = -1;
-    } else {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
-                "ngx_get_connection");
-        rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-        goto error;
-    }
+    if (ctx->pipe_stderr[PIPE_READ_END] != -1) {
+        if (ngx_nonblocking(ctx->pipe_stderr[PIPE_READ_END]) == -1) {
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
+                    "ngx_nonblocking");
+            rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+            goto error;
+        }
+        ctx->c_stderr = ngx_get_connection(ctx->pipe_stderr[PIPE_READ_END],
+                                        r->connection->log);
+        if (ctx->c_stderr) {
+            ctx->pipe_stderr[PIPE_READ_END] = -1;
+        } else {
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
+                    "ngx_get_connection");
+            rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+            goto error;
+        }
 
-    ctx->c_stderr->data = ctx;
-    ctx->c_stderr->type = SOCK_STREAM;
+        ctx->c_stderr->data = ctx;
+        ctx->c_stderr->type = SOCK_STREAM;
 
-    ctx->c_stderr->read->handler = ngx_http_cgi_stderr_data_handler;
-    ctx->c_stderr->read->log = r->connection->log;
-    if (ngx_handle_read_event(ctx->c_stderr->read, 0) != NGX_OK) {
-        rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-        goto error;
+        ctx->c_stderr->read->handler = ngx_http_cgi_stderr_data_handler;
+        ctx->c_stderr->read->log = r->connection->log;
+        if (ngx_handle_read_event(ctx->c_stderr->read, 0) != NGX_OK) {
+            rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+            goto error;
+        }
     }
 
     // setup request body handler
@@ -1672,6 +1706,7 @@ ngx_http_cgi_handler(ngx_http_request_t *r)
     return NGX_DONE;
 }
 
+
 static char *
 ngx_http_cgi_set_interpreter(ngx_conf_t *cf, ngx_command_t *cmd, void *c) {
     ngx_http_cgi_loc_conf_t  *conf = c;
@@ -1700,6 +1735,34 @@ ngx_http_cgi_set_interpreter(ngx_conf_t *cf, ngx_command_t *cmd, void *c) {
 
         ngx_memcpy(*pstr, args[i].data, args[i].len);
         (*pstr)[args[i].len] = 0;
+    }
+
+    return NGX_CONF_OK;
+}
+
+
+static char *
+ngx_http_cgi_set_stderr(ngx_conf_t *cf, ngx_command_t *cmd, void *c) {
+    ngx_http_cgi_loc_conf_t  *conf = c;
+    ngx_str_t                *args = cf->args->elts;
+    char                     *fpath;
+
+    if (conf->cgi_stderr != CGI_STDERR_UNSET) {
+        return "is duplicate";
+    }
+
+    assert(cf->args->nelts == 2);
+    if (args[1].len == 0) {
+        conf->cgi_stderr = CGI_STDERR_PIPE;
+    } else {
+        fpath = strndup((char*)args[1].data, args[1].len);
+        conf->cgi_stderr = open(fpath, O_WRONLY | O_APPEND | O_CREAT, 0644);
+        if (conf->cgi_stderr == -1) {
+            free(fpath);
+            return "fail to open file";
+        }
+        // TODO: clean up fd when conf reload
+        free(fpath);
     }
 
     return NGX_CONF_OK;
@@ -1743,6 +1806,7 @@ ngx_http_cgi_create_loc_conf(ngx_conf_t *cf)
     conf->strict_mode = NGX_CONF_UNSET;
     conf->interpreter = NGX_CONF_UNSET_PTR;
     conf->x_only = NGX_CONF_UNSET;
+    conf->cgi_stderr = CGI_STDERR_UNSET;
 
     return conf;
 }
@@ -1760,6 +1824,7 @@ ngx_http_cgi_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_conf_merge_value(conf->strict_mode, prev->strict_mode, 1);
     ngx_conf_merge_ptr_value(conf->interpreter, prev->interpreter, NULL);
     ngx_conf_merge_value(conf->x_only, prev->x_only, 1);
+    ngx_conf_merge_value(conf->cgi_stderr, prev->cgi_stderr, CGI_STDERR_PIPE);
 
     if (conf->enabled) {
         ngx_http_core_loc_conf_t  *clcf;
