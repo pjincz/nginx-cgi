@@ -1646,7 +1646,9 @@ ngx_http_cgi_handle_init(ngx_http_request_t *r) {
     }
 
     // setup request body handler
-    r->read_event_handler = ngx_http_cgi_request_body_handler;
+    if (r->reading_body) {
+        r->read_event_handler = ngx_http_cgi_request_body_handler;
+    }
 
     return;
 
