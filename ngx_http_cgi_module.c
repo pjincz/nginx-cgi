@@ -167,10 +167,10 @@ static ngx_command_t  ngx_http_cgi_commands[] = {
         NULL
     },
 
-    // TODO: add following symbolic link?
-    // TODO: add cgi_detailed_error_page?
+    // TODO: add an option to disable following symbolic link?
+    // TODO: add an option to report cgi error to client side?
 
-      ngx_null_command
+    ngx_null_command
 };
 
 
@@ -221,10 +221,10 @@ ngx_http_cgi_ctx_cleanup(void *data) {
         close(ctx->pipe_stdout[1]);
     }
 
-    if (ctx->c_stdin && !ctx->c_stdin->close) {
+    if (ctx->c_stdin) {
         ngx_close_connection(ctx->c_stdin);
     }
-    if (ctx->c_stdout && !ctx->c_stdout->close) {
+    if (ctx->c_stdout) {
         ngx_close_connection(ctx->c_stdout);
     }
 }
@@ -651,13 +651,15 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
 static ngx_int_t
 ngx_http_cgi_spawn_child_process(ngx_http_cgi_ctx_t *ctx) {
     ngx_http_cgi_spwan_vars_t spawn_vars = {0};
-    pid_t child_pid = 0;
-    int wstatus = 0;
-    ngx_int_t rc = NGX_OK;
+    pid_t                     child_pid = 0;
+    int                       wstatus = 0;
+    ngx_int_t                 rc = NGX_OK;
+    ngx_http_request_t       *r = ctx->r;
 
-    if (ctx->r->request_body->bufs) {
+    // don't create stdin pipe if there's no body to save connections
+    if ((r->request_body && r->request_body->bufs) || r->reading_body) {
         if (pipe(ctx->pipe_stdin) == -1) {
-            ngx_log_error(NGX_LOG_ERR, ctx->r->connection->log, ngx_errno,
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
                     "pipe");
             rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
             goto cleanup;
@@ -665,7 +667,7 @@ ngx_http_cgi_spawn_child_process(ngx_http_cgi_ctx_t *ctx) {
     }
 
     if (pipe(ctx->pipe_stdout) == -1) {
-        ngx_log_error(NGX_LOG_ERR, ctx->r->connection->log, ngx_errno, "pipe");
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno, "pipe");
         rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
         goto cleanup;
     }
@@ -674,8 +676,7 @@ ngx_http_cgi_spawn_child_process(ngx_http_cgi_ctx_t *ctx) {
     spawn_vars.child_stack = malloc(STACK_SIZE);
     spawn_vars.grandchild_stack = malloc(STACK_SIZE);
     if (!spawn_vars.child_stack || !spawn_vars.grandchild_stack) {
-        ngx_log_error(NGX_LOG_ERR, ctx->r->connection->log, ngx_errno,
-                     "malloc");
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno, "malloc");
         rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
         goto cleanup;
     }
@@ -685,18 +686,18 @@ ngx_http_cgi_spawn_child_process(ngx_http_cgi_ctx_t *ctx) {
             spawn_vars.child_stack + STACK_SIZE,
             CLONE_VM | CLONE_VFORK, &spawn_vars);
     if (child_pid == -1) {
-        ngx_log_error(NGX_LOG_ERR, ctx->r->connection->log, ngx_errno,
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
                       "run cgi \"%V\" failed", &ctx->script);
         rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
         goto cleanup;
     }
-    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, ctx->r->connection->log, 0,
+    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
             "cgi spawn process: %d", child_pid);
 
     // child process will exit immediately after forking grandchild
     //  __WCLONE is required to wait cloned process
     if (waitpid(child_pid, &wstatus, __WCLONE) == -1) {
-        ngx_log_error(NGX_LOG_ERR, ctx->r->connection->log, ngx_errno,
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
                       "failed to clean child process");
         rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
         goto cleanup;
@@ -705,15 +706,15 @@ ngx_http_cgi_spawn_child_process(ngx_http_cgi_ctx_t *ctx) {
     if (WEXITSTATUS(wstatus) != 0) {
         switch (WEXITSTATUS(wstatus)) {
         case CHILD_PROCESS_CLONE_2_ERROR:
-            ngx_log_error(NGX_LOG_ERR, ctx->r->connection->log, 0,
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                         "spawn process clone 2 failed");
             break;
         case CHILD_PROCESS_EXEC_ERROR:
-            ngx_log_error(NGX_LOG_ERR, ctx->r->connection->log, 0,
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                         "spawn process exec failed");
             break;
         default:
-            ngx_log_error(NGX_LOG_ERR, ctx->r->connection->log, 0,
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                         "spawn process unknown error");
             break;
         }
@@ -1312,6 +1313,7 @@ ngx_http_cgi_stdin_data_handler(ngx_event_t *ev) {
     ngx_connection_t   *c = ev->data;
     ngx_http_cgi_ctx_t *ctx = c->data;
     ngx_http_request_t *r = ctx->r;
+    ngx_chain_t        *chain;
     ngx_buf_t          *buf;
     ngx_flag_t          pipe_broken = 0;
     ngx_flag_t          io_error = 0;
@@ -1319,16 +1321,21 @@ ngx_http_cgi_stdin_data_handler(ngx_event_t *ev) {
     int nwrite;
 
     while (r->request_body && r->request_body->bufs) {
-        buf = r->request_body->bufs->buf;
+        chain = r->request_body->bufs;
+        buf = chain->buf;
+
         nwrite = write(c->fd, buf->pos, buf->last - buf->pos);
-        if (nwrite > 0) {
+
+        if (nwrite >= 0) {
             buf->pos += nwrite;
             if (buf->pos == buf->last) {
-                r->request_body->bufs = r->request_body->bufs->next;
+                if (buf->temporary) {
+                    ngx_pfree(r->pool, buf);
+                }
+
+                r->request_body->bufs = chain->next;
+                ngx_pfree(r->pool, chain);
             }
-        } else if (nwrite == 0) {
-            // io buf is full
-            break;
         } else {
             if (ngx_errno == EAGAIN) {
                 // io buf is full
@@ -1348,11 +1355,51 @@ ngx_http_cgi_stdin_data_handler(ngx_event_t *ev) {
         }
     }
 
-    if (!r->request_body->bufs || pipe_broken || io_error) {
+    if (!r->request_body->bufs && !r->reading_body) {
+        // passed all request body
         ngx_close_connection(c);
-    } else {
+        ctx->c_stdin = NULL;
+    } else if (pipe_broken || io_error) {
+        // cgi close stdin or io error
+        ngx_close_connection(c);
+        ctx->c_stdin = NULL;
+    }
+
+    if (!c->close && r->request_body->bufs) {
+        // still more data need to be wrote
         ngx_handle_write_event(ctx->c_stdin->write, 0);
     }
+}
+
+
+static void
+ngx_http_cgi_request_body_handler(ngx_http_request_t *r) {
+    // async request body handler, when invoked, more data comes in
+    ngx_http_cgi_ctx_t *ctx;
+    ngx_int_t           rc;
+    
+    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                   "ngx_http_cgi_request_body_handler");
+
+    ctx = ngx_http_get_module_ctx(r, ngx_http_cgi_module);
+    if (ctx == NULL) {
+        rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+        goto error;
+    }
+
+    rc = ngx_http_read_unbuffered_request_body(r);
+    if (rc == NGX_ERROR || rc > NGX_OK) {
+        goto error;
+    }
+
+    if (ctx->c_stdin->write->ready) {
+        ngx_http_cgi_stdin_data_handler(ctx->c_stdin->write);
+    }
+    return;
+
+error:
+    ngx_http_finalize_request(r, rc);
+    return;
 }
 
 
@@ -1512,6 +1559,9 @@ ngx_http_cgi_handle_init(ngx_http_request_t *r) {
         goto error;
     }
 
+    // setup request body handler
+    r->read_event_handler = ngx_http_cgi_request_body_handler;
+
     return;
 
 error:
@@ -1525,7 +1575,7 @@ ngx_http_cgi_handler(ngx_http_request_t *r)
 {
     ngx_int_t  rc;
 
-    // TODO: streaming request body support
+    r->request_body_no_buffering = 1;
     rc = ngx_http_read_client_request_body(r, ngx_http_cgi_handle_init);
     if (rc >= NGX_HTTP_SPECIAL_RESPONSE) {
         return rc;
