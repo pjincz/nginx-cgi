@@ -421,7 +421,7 @@ ngx_http_cgi_locate_script(ngx_http_cgi_ctx_t *ctx) {
                         "stat \"%V\" failed", &ctx->script);
             if (ngx_errno == EACCES) {
                 return NGX_HTTP_FORBIDDEN;
-            } else if (ngx_errno = ENOTDIR) {
+            } else if (ngx_errno == ENOTDIR) {
                 // remove a level from uri
                 while (uri_end > uri_start && r->uri.data[uri_end - 1] != '/') {
                     --uri_end;
