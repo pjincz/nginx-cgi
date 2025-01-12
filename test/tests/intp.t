@@ -45,8 +45,8 @@ EOF
 
 $t->run();
 
-like(http_get('/cgi-bin/no-perm.sh'), qr/\HTTP\/1\.[01] 403/m, 'x-only-on no-perm');
-like(http_get('/cgi-bin/no-shebang.sh'), qr/\HTTP\/1\.[01] 500/m, 'x-only-on no-shabang');
+like(http_get('/cgi-bin/no-perm.sh'), qr/HTTP\/1\.[01] 403/m, 'x-only-on no-perm');
+like(http_get('/cgi-bin/no-shebang.sh'), qr/HTTP\/1\.[01] 500/m, 'x-only-on no-shabang');
 
 $t->stop();
 
@@ -79,8 +79,8 @@ EOF
 
 $t->run();
 
-like(http_get('/cgi-bin/no-perm.sh'), qr/\HTTP\/1\.[01] 500/m, 'x-only-off no-perm');
-like(http_get('/cgi-bin/no-shebang.sh'), qr/\HTTP\/1\.[01] 500/m, 'x-only-off no-shebang');
+like(http_get('/cgi-bin/no-perm.sh'), qr/HTTP\/1\.[01] 500/m, 'x-only-off no-perm');
+like(http_get('/cgi-bin/no-shebang.sh'), qr/HTTP\/1\.[01] 500/m, 'x-only-off no-shebang');
 
 $t->stop();
 
@@ -114,8 +114,8 @@ EOF
 
 $t->run();
 
-like(http_get('/cgi-bin/no-perm.sh'), qr/\HTTP\/1\.[01] 403/m, 'intp x-only-on no-perm');
-like(http_get('/cgi-bin/no-shebang.sh'), qr/\HTTP\/1\.[01] 200/m, 'intp x-only-on no-shebang');
+like(http_get('/cgi-bin/no-perm.sh'), qr/HTTP\/1\.[01] 403/m, 'intp x-only-on no-perm');
+like(http_get('/cgi-bin/no-shebang.sh'), qr/HTTP\/1\.[01] 200/m, 'intp x-only-on no-shebang');
 
 $t->stop();
 
@@ -149,7 +149,7 @@ EOF
 
 $t->run();
 
-like(http_get('/cgi-bin/no-perm.sh'), qr/\HTTP\/1\.[01] 200/m, 'intp x-only-off no-perm');
-like(http_get('/cgi-bin/no-shebang.sh'), qr/\HTTP\/1\.[01] 200/m, 'intp x-only-off no-shebang');
+like(http_get('/cgi-bin/no-perm.sh'), qr/HTTP\/1\.[01] 200/m, 'intp x-only-off no-perm');
+like(http_get('/cgi-bin/no-shebang.sh'), qr/HTTP\/1\.[01] 200/m, 'intp x-only-off no-shebang');
 
 $t->stop();

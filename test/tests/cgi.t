@@ -48,7 +48,7 @@ $t->run();
 # basic tests
 
 like(http_get('/cgi-bin/hello.sh'), qr/^hello$/m, 'hello');
-like(http_get('/cgi-bin/not-exists.sh'), qr/\HTTP\/1\.[01] 404/m, 'not found');
+like(http_get('/cgi-bin/not-exists.sh'), qr/HTTP\/1\.[01] 404/m, 'not found');
 like(http_get('/cgi-bin/no-perm.sh'), qr/HTTP\/1\.[01] 403/m, 'no perm');
 like(http_get('/cgi-bin/bad.sh'), qr/HTTP\/1\.[01] 500/m, 'bad cgi');
 like(http_get('/cgi-bin/302.sh'), qr/HTTP\/1\.[01] 302/m, 'redirect');
@@ -152,9 +152,6 @@ like(http_get('/cgi-bin/env.sh'), qr/^SERVER_ADDR="127.0.0.1"$/m, 'SERVER_ADDR')
 # TODO: test cgi_path
 # TODO: test cgi_strict
 # TODO: test cgi_stderr
-
-# extra features
-# TODO: test http 1.1 chunked response
 
 ###############################################################################
 # security tests
