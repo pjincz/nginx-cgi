@@ -13,7 +13,7 @@ use Test::Nginx;
 select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
-my $t = Test::Nginx->new()->plan(19);
+my $t = Test::Nginx->new()->plan(22);
 ok($t->has_module('cgi'), 'has cgi module');
 
 ###############################################################################
@@ -71,9 +71,35 @@ like(http_get('/cgi-bin/env.sh'), qr/^REQUEST_METHOD="GET"$/m, 'REQUEST_METHOD')
 like(http_get('/cgi-bin/env.sh'), qr/^SCRIPT_NAME="\/cgi-bin\/env.sh"$/m, 'SCRIPT_NAME');
 like(http_get('/cgi-bin/env.sh'), qr/^SERVER_NAME="localhost"$/m, 'SERVER_NAME');
 like(http_get('/cgi-bin/env.sh'), qr/^SERVER_PORT="8080"$/m, 'SERVER_PORT');
-# TODO: SERVER_PROTOCOL
 like(http_get('/cgi-bin/env.sh'), qr/^SERVER_SOFTWARE="nginx\/.*"$/m, 'SERVER_SOFTWARE');
-# TODO: X_ vars
+
+# SERVER_PROTOCOL
+like(http(<<EOF), qr/^SERVER_PROTOCOL="HTTP\/1.0"$/m, 'SERVER_PROTOCOL 1.0');
+GET /cgi-bin/env.sh HTTP/1.0
+Host: localhost
+
+EOF
+like(http(<<EOF), qr/^SERVER_PROTOCOL="HTTP\/1.1"$/m, 'SERVER_PROTOCOL 1.1');
+GET /cgi-bin/env.sh HTTP/1.1
+Host: localhost
+Connection: close
+
+EOF
+
+# HTTP_ vars
+like(http(<<EOF), qr/^HTTP_ACCEPT="\*\/\*"$/m, 'HTTP_ACCEPT');
+GET /cgi-bin/env.sh HTTP/1.0
+Host: localhost
+Accept: */*
+
+EOF
+# TODO: fix this
+# like(http(<<EOF), qr/^HTTP_AAA="123"$/m, 'HTTP_AAA');
+# GET /cgi-bin/env.sh HTTP/1.0
+# Host: localhost
+# Aaa: 123
+
+# EOF
 
 # vars from apache2
 like(http_get('/cgi-bin/env.sh'), qr/^DOCUMENT_ROOT="$ENV{TEST_ROOT_DIR}"$/m, 'DOCUMENT_ROOT');
