@@ -13,7 +13,7 @@ use Test::Nginx;
 select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
-my $t = Test::Nginx->new()->plan(31);
+my $t = Test::Nginx->new()->plan(33);
 ok($t->has_module('cgi'), 'has cgi module');
 
 ###############################################################################
@@ -75,8 +75,6 @@ like(http_get('/../cgi-bin/hello.sh'), qr/\b400\b/m, 'hello');
 
 # vars from rfc3875
 # TODO: AUTH_TYPE
-# TODO: CONTENT_LENGTH
-# TODO: CONTENT_TYPE
 like(http_get('/cgi-bin/env.sh'), qr/^GATEWAY_INTERFACE="CGI\/1.1"$/m, 'GATEWAY_INTERFACE');
 like(http_get('/cgi-bin/env.sh/aaa'), qr/^PATH_INFO="\/aaa"$/m, 'PATH_INFO');
 like(http_get('/cgi-bin/env.sh/aaa'), qr/^PATH_TRANSLATED="$ENV{TEST_ROOT_DIR}\/aaa"$/m, 'PATH_TRANSLATED');
@@ -90,6 +88,18 @@ like(http_get('/cgi-bin/env.sh'), qr/^SCRIPT_NAME="\/cgi-bin\/env.sh"$/m, 'SCRIP
 like(http_get('/cgi-bin/env.sh'), qr/^SERVER_NAME="localhost"$/m, 'SERVER_NAME');
 like(http_get('/cgi-bin/env.sh'), qr/^SERVER_PORT="8080"$/m, 'SERVER_PORT');
 like(http_get('/cgi-bin/env.sh'), qr/^SERVER_SOFTWARE="nginx\/.*"$/m, 'SERVER_SOFTWARE');
+
+# CONTENT_LENGTH && CONTENT_TYPE
+my $r = http(<<EOF);
+GET /cgi-bin/env.sh HTTP/1.0
+Host: localhost
+Content-Length: 14
+Content-Type: text/plain
+
+a magic string
+EOF
+like($r, qr/^CONTENT_LENGTH="14"$/m, 'CONTENT_LENGTH');
+like($r, qr/^CONTENT_TYPE="text\/plain"$/m, 'CONTENT_TYPE');
 
 # SERVER_PROTOCOL
 like(http(<<EOF), qr/^SERVER_PROTOCOL="HTTP\/1.0"$/m, 'SERVER_PROTOCOL 1.0');
