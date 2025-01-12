@@ -13,7 +13,7 @@ use Test::Nginx;
 select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
-my $t = Test::Nginx->new()->plan(4);
+my $t = Test::Nginx->new()->plan(19);
 ok($t->has_module('cgi'), 'has cgi module');
 
 ###############################################################################
@@ -52,40 +52,39 @@ like(http_get('/cgi-bin/not-exists.sh'), qr/404/m, 'not found');
 like(http_get('/cgi-bin/no-perm.sh'), qr/403/m, 'no perm');
 # TODO: test cgi status response
 # TODO: test request body
-# TODO: alias support
+# TODO: test alias
+# TODO: test rewrite (try_files)
 
 # vars from rfc3875
 # TODO: AUTH_TYPE
 # TODO: CONTENT_LENGTH
 # TODO: CONTENT_TYPE
-# TODO: GATEWAY_INTERFACE
-# TODO: PATH_INFO
+like(http_get('/cgi-bin/env.sh'), qr/^GATEWAY_INTERFACE="CGI\/1.1"$/m, 'GATEWAY_INTERFACE');
+like(http_get('/cgi-bin/env.sh/aaa'), qr/^PATH_INFO="\/aaa"$/m, 'PATH_INFO');
 # TODO: PATH_TRANSLATED
-# TODO: QUERY_STRING
-# TODO: REMOTE_ADDR
+like(http_get('/cgi-bin/env.sh?a=1&b=2'), qr/^QUERY_STRING="a=1&b=2"$/m, 'QUERY_STRING');
+like(http_get('/cgi-bin/env.sh'), qr/^REMOTE_ADDR="127.0.0.1"$/m, 'REMOTE_ADDR');
 # TODO: REMOTE_HOST
 # TODO: REMOTE_IDENT
 # TODO: REMOTE_USER
-# TODO: REQUEST_METHOD
-# TODO: SCRIPT_NAME
-# TODO: SERVER_NAME
-# TODO: SERVER_PORT
+like(http_get('/cgi-bin/env.sh'), qr/^REQUEST_METHOD="GET"$/m, 'REQUEST_METHOD');
+like(http_get('/cgi-bin/env.sh'), qr/^SCRIPT_NAME="\/cgi-bin\/env.sh"$/m, 'SCRIPT_NAME');
+like(http_get('/cgi-bin/env.sh'), qr/^SERVER_NAME="localhost"$/m, 'SERVER_NAME');
+like(http_get('/cgi-bin/env.sh'), qr/^SERVER_PORT="8080"$/m, 'SERVER_PORT');
 # TODO: SERVER_PROTOCOL
-# TODO: SERVER_SOFTWARE
+like(http_get('/cgi-bin/env.sh'), qr/^SERVER_SOFTWARE="nginx\/.*"$/m, 'SERVER_SOFTWARE');
 # TODO: X_ vars
 
 # vars from apache2
-# TODO: DOCUMENT_ROOT
-# TODO: REMOTE_PORT
-# TODO: REQUEST_SCHEME
-# TODO: REQUEST_URI
-# TODO: SCRIPT_FILENAME
-# TODO: SERVER_ADDR
+like(http_get('/cgi-bin/env.sh'), qr/^DOCUMENT_ROOT="$ENV{TEST_ROOT_DIR}"$/m, 'DOCUMENT_ROOT');
+like(http_get('/cgi-bin/env.sh'), qr/^REMOTE_PORT=".*"$/m, 'REMOTE_PORT');
+like(http_get('/cgi-bin/env.sh'), qr/^REQUEST_SCHEME="http"$/m, 'REQUEST_SCHEME');
+like(http_get('/cgi-bin/env.sh'), qr/^REQUEST_URI="\/cgi-bin\/env.sh"$/m, 'REQUEST_URI');
+like(http_get('/cgi-bin/env.sh'), qr/^SCRIPT_FILENAME="$ENV{TEST_ROOT_DIR}\/cgi-bin\/env.sh"$/m, 'SCRIPT_FILENAME');
+like(http_get('/cgi-bin/env.sh'), qr/^SERVER_ADDR="127.0.0.1"$/m, 'SERVER_ADDR');
 # TODO: HTTP_ACCEPT
 # TODO: HTTP_HOST
 # TODO: HTTP_USER_AGENT
-# TODO: CONTENT_LENGTH
-# TODO: CONTENT_TYPE
 
 # options
 # TODO: test cgi_path
