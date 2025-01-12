@@ -1476,9 +1476,9 @@ ngx_http_cgi_stdout_data_handler(ngx_event_t *ev) {
             }
         } else if (nread == 0) {
             // end of file
-            ngx_http_finalize_request(r, ngx_http_cgi_flush(ctx, 1));
             ngx_close_connection(ctx->c_stdout);
             ctx->c_stdout = NULL;
+            ngx_http_finalize_request(r, ngx_http_cgi_flush(ctx, 1));
             return;
         } else {
             if (ngx_errno == EAGAIN) {
