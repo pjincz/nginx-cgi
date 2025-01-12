@@ -1,3 +1,7 @@
+## nginx
+https://nginx.org/en/docs/dev/development_guide.html
+https://hg.nginx.org/nginx-tests
+
 ## Hop-by-hop headers
 
 https://datatracker.ietf.org/doc/html/rfc2616#section-13.5.1
