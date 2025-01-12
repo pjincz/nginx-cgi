@@ -151,8 +151,6 @@ like(http_get('/cgi-bin/env.sh'), qr/^SERVER_ADDR="127.0.0.1"$/m, 'SERVER_ADDR')
 # options
 # TODO: test cgi_path
 # TODO: test cgi_strict
-# TODO: test cgi_interpreter
-# TODO: test cgi_x_only
 # TODO: test cgi_stderr
 
 # extra features
