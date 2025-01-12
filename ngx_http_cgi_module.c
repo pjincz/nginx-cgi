@@ -108,11 +108,6 @@ static char * ngx_http_cgi_set_interpreter(
 static char * ngx_http_cgi_set_stderr(
     ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 
-static char *ngx_http_cgi_enable_post(ngx_conf_t *cf, void *post, void *data);
-static ngx_conf_post_t  ngx_http_cgi_enable_post_list = {
-    ngx_http_cgi_enable_post
-};
-
 
 static ngx_command_t  ngx_http_cgi_commands[] = {
 
@@ -124,7 +119,7 @@ static ngx_command_t  ngx_http_cgi_commands[] = {
         ngx_conf_set_flag_slot,
         NGX_HTTP_LOC_CONF_OFFSET,
         offsetof(ngx_http_cgi_loc_conf_t, enabled),
-        &ngx_http_cgi_enable_post_list
+        NULL
     },
 
     // Change cgi script PATH environment variable
@@ -369,62 +364,21 @@ static int ngx_http_cgi_child_proc(void *arg) {
 
 
 static ngx_int_t
-ngx_http_cgi_make_path(
-        ngx_pool_t *pool,
-        ngx_str_t *root, size_t shift_path, ngx_str_t *path,
-        ngx_str_t *out)
-{
-    size_t  uri_start;
-
-    out->data = ngx_palloc(pool, root->len + 1 + path->len + 1);
-    ngx_memcpy(out->data, root->data, root->len);
-    out->len = root->len;
-
-    // append a tail / here, if clcf->root doesn't contains one
-    if (out->data[out->len - 1] != '/') {
-        out->data[out->len] = '/';
-        out->len += 1;
-    }
-
-    uri_start = shift_path;
-    if (uri_start > path->len) {
-        // this should not happens
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
-    }
-    // remove leading /s in uri
-    while (path->data[uri_start] == '/') {
-        uri_start += 1;
-    }
-
-    // append uri to script path
-    memcpy(out->data + out->len, path->data + uri_start,
-           path->len - uri_start);
-    out->len += path->len - uri_start;
-
-    return NGX_OK;
-}
-
-
-static ngx_int_t
 ngx_http_cgi_locate_script(ngx_http_cgi_ctx_t *ctx) {
     ngx_http_request_t        *r = ctx->r;
-    ngx_http_core_loc_conf_t  *clcf;
     ngx_file_info_t            script_info;
-    ngx_int_t                  rc;
     int                        uri_remaining = 0;
+    size_t                     root_len;
+    ngx_str_t                  orig_uri;
 
-    clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
-    if (clcf == NULL) {
+    if (!ngx_http_map_uri_to_path(r, &ctx->script, &root_len, 0))
+    {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
-    ngx_log_debug3(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
-                   "root: %V, alias: %d, uri: %V", &clcf->root,
-                   clcf->alias, &r->uri);
-
-    rc = ngx_http_cgi_make_path(
-            r->pool, &clcf->root, clcf->alias, &r->uri, &ctx->script);
-    if (rc != NGX_OK) {
-        return rc;
+    // ngx_http_map_uri_to_path returns contains an extra `0` for c compatiblity
+    // let's remove it here
+    if (ctx->script.len > 0 && ctx->script.data[ctx->script.len - 1] == 0) {
+        ctx->script.len -= 1;
     }
 
     for (;;) {
@@ -446,7 +400,7 @@ ngx_http_cgi_locate_script(ngx_http_cgi_ctx_t *ctx) {
                     ctx->script.len -= 1;
                     uri_remaining += 1;
                 }
-                if (ctx->script.len <= clcf->root.len) {
+                if (ctx->script.len <= root_len) {
                     return NGX_HTTP_INTERNAL_SERVER_ERROR;
                 } else {
                     continue;
@@ -464,13 +418,15 @@ ngx_http_cgi_locate_script(ngx_http_cgi_ctx_t *ctx) {
         ctx->path_info.data = r->uri.data + r->uri.len - uri_remaining;
         ctx->path_info.len = uri_remaining;
 
-        rc = ngx_http_cgi_make_path(
-            r->pool, &clcf->root, 0, &ctx->path_info,
-            &ctx->path_translated);
-
-        if (rc != NGX_OK) {
-            return rc;
-    }
+        // fake r->uri, and change it back later
+        orig_uri = r->uri;
+        r->uri = ctx->path_info;
+        if (!ngx_http_map_uri_to_path(r, &ctx->path_translated, &root_len, 0))
+        {
+            r->uri = orig_uri;
+            return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        }
+        r->uri = orig_uri;
     }
 
     ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
@@ -1823,25 +1779,28 @@ ngx_http_cgi_set_stderr(ngx_conf_t *cf, ngx_command_t *cmd, void *c) {
 }
 
 
-static char *
-ngx_http_cgi_enable_post(ngx_conf_t *cf, void *post, void *data) {
-    ngx_flag_t  *enabled = data;
-    ngx_http_core_loc_conf_t  *clcf;
-
-    if (*enabled) {
-        clcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
-
-        if (!clcf->named && _ngx_str_last_ch(clcf->name) != '/') {
-            // enable cgi in a location tailed without / will cause security
-            // vulnerability. for example: /cgi-binsomething may be considered
-            // as a cgi script. stop it here
-            return "security vulnerability: location with cgi on must always "
-                   "finished with / for security reason";
-        }
-    }
-
-    return NGX_CONF_OK;
-}
+// nginx alias works very strange, force tailing / will cause another problem
+// let's remove this force check for now. and may impl the security check on
+// handler
+// static char *
+// ngx_http_cgi_enable_post(ngx_conf_t *cf, void *post, void *data) {
+//     ngx_flag_t  *enabled = data;
+//     ngx_http_core_loc_conf_t  *clcf;
+//
+//     if (*enabled) {
+//         clcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
+//
+//         if (!clcf->named && _ngx_str_last_ch(clcf->name) != '/') {
+//             // enable cgi in a location tailed without / will cause security
+//             // vulnerability. for example: /cgi-binsomething may be considered
+//             // as a cgi script. stop it here
+//             return "security vulnerability: location with cgi on must always "
+//                    "finished with / for security reason";
+//         }
+//     }
+//
+//     return NGX_CONF_OK;
+// }
 
 
 static void *
