@@ -13,7 +13,7 @@ use Test::Nginx;
 select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
-my $t = Test::Nginx->new()->plan(30);
+my $t = Test::Nginx->new()->plan(31);
 ok($t->has_module('cgi'), 'has cgi module');
 
 ###############################################################################
@@ -53,6 +53,9 @@ like(http_get('/cgi-bin/no-perm.sh'), qr/HTTP\/1\.[01] 403/m, 'no perm');
 like(http_get('/cgi-bin/bad.sh'), qr/HTTP\/1\.[01] 500/m, 'bad cgi');
 like(http_get('/cgi-bin/302.sh'), qr/HTTP\/1\.[01] 302/m, 'redirect');
 like(http_get('/cgi-bin/no-shebang.sh'), qr/HTTP\/1\.[01] 500/m, 'no shebang');
+
+# security test: not allowed to cross location directory boundary
+like(http_get('/cgi-bin-shouldnot-work.sh'), qr/HTTP\/1\.[01] 403/m, 'no cross boundary');
 
 like(http(<<EOF), qr/^a magic string$/m, 'request body');
 GET /cgi-bin/cat.sh HTTP/1.0

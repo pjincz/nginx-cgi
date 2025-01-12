@@ -371,6 +371,38 @@ ngx_http_cgi_locate_script(ngx_http_cgi_ctx_t *ctx) {
     size_t                     root_len;
     ngx_str_t                  orig_uri;
 
+    ngx_http_core_loc_conf_t  *clcf;
+    ngx_flag_t                 regular_location;
+
+    clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
+    if (!clcf) {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+            "get ngx_http_core_loc_conf_t failed");
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+#if (NGX_PCRE)
+    regular_location = !clcf->named && !clcf->regex;
+#else
+    regular_location = !clcf->named;
+#endif
+
+    if (regular_location) {
+        if (_ngx_str_last_ch(clcf->name) != '/') {
+            // dangerous location, not finished with `/`
+            if (r->uri.len > clcf->name.len &&
+                r->uri.data[clcf->name.len] != '/')
+            {
+                // if you have a location `/cgi-bin` with cgi turns on,
+                // /cgi-bin-something.sh should not be considered as a cgi
+                // script for security reason
+                ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                    "trying access file beyond location dir");
+                return NGX_HTTP_FORBIDDEN;
+            }
+        }
+    }
+
     if (!ngx_http_map_uri_to_path(r, &ctx->script, &root_len, 0))
     {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
@@ -1777,30 +1809,6 @@ ngx_http_cgi_set_stderr(ngx_conf_t *cf, ngx_command_t *cmd, void *c) {
 
     return NGX_CONF_OK;
 }
-
-
-// nginx alias works very strange, force tailing / will cause another problem
-// let's remove this force check for now. and may impl the security check on
-// handler
-// static char *
-// ngx_http_cgi_enable_post(ngx_conf_t *cf, void *post, void *data) {
-//     ngx_flag_t  *enabled = data;
-//     ngx_http_core_loc_conf_t  *clcf;
-//
-//     if (*enabled) {
-//         clcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
-//
-//         if (!clcf->named && _ngx_str_last_ch(clcf->name) != '/') {
-//             // enable cgi in a location tailed without / will cause security
-//             // vulnerability. for example: /cgi-binsomething may be considered
-//             // as a cgi script. stop it here
-//             return "security vulnerability: location with cgi on must always "
-//                    "finished with / for security reason";
-//         }
-//     }
-//
-//     return NGX_CONF_OK;
-// }
 
 
 static void *
