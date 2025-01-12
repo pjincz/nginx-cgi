@@ -656,16 +656,12 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
             i = 0;
         }
 
-        if (_strieq(v[i].key, "Accept")) {
-            _add_env_nstr(ctx, "HTTP_ACCEPT", &v[i].value);
-        } else if (_strieq(v[i].key, "Host")) {
-            _add_env_nstr(ctx, "HTTP_HOST", &v[i].value);
-        } else if (_strieq(v[i].key, "User-Agent")) {
-            _add_env_nstr(ctx, "HTTP_USER_AGENT", &v[i].value);
-        } else if (_strieq(v[i].key, "Content-Length")) {
+        if (_strieq(v[i].key, "Content-Length")) {
             _add_env_nstr(ctx, "CONTENT_LENGTH", &v[i].value);
         } else if (_strieq(v[i].key, "Content-Type")) {
             _add_env_nstr(ctx, "CONTENT_TYPE", &v[i].value);
+        } else if (_strieq(v[i].key, "Authorization")) {
+            // Authorization should not be forwarded
         } else if ((v[i].key.data[0] == 'X' || v[i].key.data[0] == 'x')
                    && v[i].key.data[1] == '-') {
             // extension headers
@@ -678,6 +674,23 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
                 name[i] = ngx_toupper(name[i]);
                 if (name[i] == '-') {
                     name[i] = '_';
+                }
+            }
+
+            _add_env_nstr(ctx, (char*)name, &v[i].value);
+        } else {
+            // protocal headers
+            // do we need to whitelist known http headers here?
+            u_char *name = ngx_palloc(r->pool, 5 + v[i].key.len + 1);
+            ngx_memcpy(name, "HTTP_", 5);
+            ngx_memcpy(name + 5, v[i].key.data, v[i].key.len);
+            name[5 + v[i].key.len] = 0;
+
+            // replace `-` with `_`, and convert to uppercase
+            for (u_char *p = name; *p; ++p) {
+                *p = ngx_toupper(*p);
+                if (*p == '-') {
+                    *p = '_';
                 }
             }
 

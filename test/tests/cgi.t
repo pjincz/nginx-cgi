@@ -13,7 +13,7 @@ use Test::Nginx;
 select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
-my $t = Test::Nginx->new()->plan(22);
+my $t = Test::Nginx->new()->plan(25);
 ok($t->has_module('cgi'), 'has cgi module');
 
 ###############################################################################
@@ -45,15 +45,18 @@ EOF
 $t->run();
 
 ###############################################################################
+# basic tests
 
-# basic
 like(http_get('/cgi-bin/hello.sh'), qr/^hello$/m, 'hello');
-like(http_get('/cgi-bin/not-exists.sh'), qr/404/m, 'not found');
-like(http_get('/cgi-bin/no-perm.sh'), qr/403/m, 'no perm');
+like(http_get('/cgi-bin/not-exists.sh'), qr/\b404\b/m, 'not found');
+like(http_get('/cgi-bin/no-perm.sh'), qr/\b403\b/m, 'no perm');
 # TODO: test cgi status response
 # TODO: test request body
 # TODO: test alias
 # TODO: test rewrite (try_files)
+
+###############################################################################
+# environment var tests
 
 # vars from rfc3875
 # TODO: AUTH_TYPE
@@ -93,13 +96,12 @@ Host: localhost
 Accept: */*
 
 EOF
-# TODO: fix this
-# like(http(<<EOF), qr/^HTTP_AAA="123"$/m, 'HTTP_AAA');
-# GET /cgi-bin/env.sh HTTP/1.0
-# Host: localhost
-# Aaa: 123
+like(http(<<EOF), qr/^HTTP_AAA="123"$/m, 'HTTP_AAA');
+GET /cgi-bin/env.sh HTTP/1.0
+Host: localhost
+Aaa: 123
 
-# EOF
+EOF
 
 # vars from apache2
 like(http_get('/cgi-bin/env.sh'), qr/^DOCUMENT_ROOT="$ENV{TEST_ROOT_DIR}"$/m, 'DOCUMENT_ROOT');
@@ -108,9 +110,9 @@ like(http_get('/cgi-bin/env.sh'), qr/^REQUEST_SCHEME="http"$/m, 'REQUEST_SCHEME'
 like(http_get('/cgi-bin/env.sh'), qr/^REQUEST_URI="\/cgi-bin\/env.sh"$/m, 'REQUEST_URI');
 like(http_get('/cgi-bin/env.sh'), qr/^SCRIPT_FILENAME="$ENV{TEST_ROOT_DIR}\/cgi-bin\/env.sh"$/m, 'SCRIPT_FILENAME');
 like(http_get('/cgi-bin/env.sh'), qr/^SERVER_ADDR="127.0.0.1"$/m, 'SERVER_ADDR');
-# TODO: HTTP_ACCEPT
-# TODO: HTTP_HOST
-# TODO: HTTP_USER_AGENT
+
+###############################################################################
+# feature tests
 
 # options
 # TODO: test cgi_path
@@ -122,7 +124,20 @@ like(http_get('/cgi-bin/env.sh'), qr/^SERVER_ADDR="127.0.0.1"$/m, 'SERVER_ADDR')
 # extra features
 # TODO: test http 1.1 chunked response
 
-# security
+###############################################################################
+# security tests
+
+# .. in uri should not go out of www dir
+like(http_get('/../cgi-bin/hello.sh'), qr/\b400\b/m, 'hello');
+
+# Authorization should not be exposed as environment
+unlike(http(<<EOF), qr/HTTP_AUTHORIZATION/m, 'no HTTP_AUTHORIZATION');
+GET /cgi-bin/env.sh HTTP/1.0
+Host: localhost
+Authorization: Basic dXNlcjpwYXNz
+
+EOF
+
 # TODO: .. in path
 # TODO: location tail / check
 # TODO: document root always starts with / or .
