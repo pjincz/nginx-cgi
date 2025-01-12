@@ -51,7 +51,8 @@ like(http_get('/cgi/hello.sh'), qr/^hello$/m, 'hello');
 
 like(http_get('/cgi/env.sh'), qr/^SCRIPT_NAME="\/cgi\/env.sh"$/m, 'SCRIPT_NAME');
 like(http_get('/cgi/env.sh/aaa'), qr/^PATH_INFO="\/aaa"$/m, 'PATH_INFO');
-# TODO: PATH_TRANSLATED
+# FIXME: PATH_TRANSLATED not correct
+# like(http_get('/cgi/env.sh/aaa'), qr/^PATH_TRANSLATED="$ENV{TEST_ROOT_DIR}\/aaa"$/m, 'PATH_TRANSLATED');
 
 like(http_get('/cgi/env.sh'), qr/^DOCUMENT_ROOT="$ENV{TEST_ROOT_DIR}\/cgi-bin"$/m, 'DOCUMENT_ROOT');
 like(http_get('/cgi/env.sh'), qr/^REQUEST_URI="\/cgi\/env.sh"$/m, 'REQUEST_URI');

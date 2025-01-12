@@ -13,7 +13,7 @@ use Test::Nginx;
 select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
-my $t = Test::Nginx->new()->plan(29);
+my $t = Test::Nginx->new()->plan(30);
 ok($t->has_module('cgi'), 'has cgi module');
 
 ###############################################################################
@@ -76,7 +76,7 @@ like(http_get('/../cgi-bin/hello.sh'), qr/\b400\b/m, 'hello');
 # TODO: CONTENT_TYPE
 like(http_get('/cgi-bin/env.sh'), qr/^GATEWAY_INTERFACE="CGI\/1.1"$/m, 'GATEWAY_INTERFACE');
 like(http_get('/cgi-bin/env.sh/aaa'), qr/^PATH_INFO="\/aaa"$/m, 'PATH_INFO');
-# TODO: PATH_TRANSLATED
+like(http_get('/cgi-bin/env.sh/aaa'), qr/^PATH_TRANSLATED="$ENV{TEST_ROOT_DIR}\/aaa"$/m, 'PATH_TRANSLATED');
 like(http_get('/cgi-bin/env.sh?a=1&b=2'), qr/^QUERY_STRING="a=1&b=2"$/m, 'QUERY_STRING');
 like(http_get('/cgi-bin/env.sh'), qr/^REMOTE_ADDR="127.0.0.1"$/m, 'REMOTE_ADDR');
 # TODO: REMOTE_HOST
