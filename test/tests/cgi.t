@@ -13,7 +13,7 @@ use Test::Nginx;
 select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
-my $t = Test::Nginx->new()->plan(28);
+my $t = Test::Nginx->new()->plan(29);
 ok($t->has_module('cgi'), 'has cgi module');
 
 ###############################################################################
@@ -53,8 +53,18 @@ like(http_get('/cgi-bin/no-perm.sh'), qr/HTTP\/1\.[01] 403/m, 'no perm');
 like(http_get('/cgi-bin/bad.sh'), qr/HTTP\/1\.[01] 500/m, 'bad cgi');
 like(http_get('/cgi-bin/302.sh'), qr/HTTP\/1\.[01] 302/m, 'redirect');
 like(http_get('/cgi-bin/no-shebang.sh'), qr/HTTP\/1\.[01] 500/m, 'no shebang');
-# TODO: test request body
-# TODO: test alias
+
+like(http(<<EOF), qr/^a magic string$/m, 'request body');
+GET /cgi-bin/cat.sh HTTP/1.0
+Host: localhost
+Content-Length: 14
+
+a magic string
+EOF
+
+# security test: .. in uri should not go out of www dir
+like(http_get('/../cgi-bin/hello.sh'), qr/\b400\b/m, 'hello');
+
 # TODO: test rewrite (try_files)
 
 ###############################################################################
@@ -104,6 +114,13 @@ Host: localhost
 Aaa: 123
 
 EOF
+# security test: Authorization should not be exposed as environment
+unlike(http(<<EOF), qr/HTTP_AUTHORIZATION/m, 'no HTTP_AUTHORIZATION');
+GET /cgi-bin/env.sh HTTP/1.0
+Host: localhost
+Authorization: Basic dXNlcjpwYXNz
+
+EOF
 
 # vars from apache2
 like(http_get('/cgi-bin/env.sh'), qr/^DOCUMENT_ROOT="$ENV{TEST_ROOT_DIR}"$/m, 'DOCUMENT_ROOT');
@@ -128,17 +145,6 @@ like(http_get('/cgi-bin/env.sh'), qr/^SERVER_ADDR="127.0.0.1"$/m, 'SERVER_ADDR')
 
 ###############################################################################
 # security tests
-
-# .. in uri should not go out of www dir
-like(http_get('/../cgi-bin/hello.sh'), qr/\b400\b/m, 'hello');
-
-# Authorization should not be exposed as environment
-unlike(http(<<EOF), qr/HTTP_AUTHORIZATION/m, 'no HTTP_AUTHORIZATION');
-GET /cgi-bin/env.sh HTTP/1.0
-Host: localhost
-Authorization: Basic dXNlcjpwYXNz
-
-EOF
 
 # TODO: location tail / check
 # TODO: document root always starts with / or .
