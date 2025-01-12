@@ -13,7 +13,7 @@ use Test::Nginx;
 select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
-my $t = Test::Nginx->new()->plan(25);
+my $t = Test::Nginx->new()->plan(28);
 ok($t->has_module('cgi'), 'has cgi module');
 
 ###############################################################################
@@ -48,9 +48,11 @@ $t->run();
 # basic tests
 
 like(http_get('/cgi-bin/hello.sh'), qr/^hello$/m, 'hello');
-like(http_get('/cgi-bin/not-exists.sh'), qr/\b404\b/m, 'not found');
-like(http_get('/cgi-bin/no-perm.sh'), qr/\b403\b/m, 'no perm');
-# TODO: test cgi status response
+like(http_get('/cgi-bin/not-exists.sh'), qr/\HTTP\/1\.[01] 404/m, 'not found');
+like(http_get('/cgi-bin/no-perm.sh'), qr/HTTP\/1\.[01] 403/m, 'no perm');
+like(http_get('/cgi-bin/bad.sh'), qr/HTTP\/1\.[01] 500/m, 'bad cgi');
+like(http_get('/cgi-bin/302.sh'), qr/HTTP\/1\.[01] 302/m, 'redirect');
+like(http_get('/cgi-bin/no-shebang.sh'), qr/HTTP\/1\.[01] 500/m, 'no shebang');
 # TODO: test request body
 # TODO: test alias
 # TODO: test rewrite (try_files)
@@ -138,7 +140,6 @@ Authorization: Basic dXNlcjpwYXNz
 
 EOF
 
-# TODO: .. in path
 # TODO: location tail / check
 # TODO: document root always starts with / or .
 # TODO: find correct script when tail / in root path
