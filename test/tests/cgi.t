@@ -73,7 +73,7 @@ like(http_get('/../cgi-bin/hello.sh'), qr/\b400\b/m, 'hello');
 ###############################################################################
 # environment var tests
 
-# vars from rfc3875
+# rfc3875 vars
 # TODO: AUTH_TYPE
 like(http_get('/cgi-bin/env.sh'), qr/^GATEWAY_INTERFACE="CGI\/1.1"$/m, 'GATEWAY_INTERFACE');
 like(http_get('/cgi-bin/env.sh/aaa'), qr/^PATH_INFO="\/aaa"$/m, 'PATH_INFO');
@@ -81,7 +81,6 @@ like(http_get('/cgi-bin/env.sh/aaa'), qr/^PATH_TRANSLATED="$ENV{TEST_ROOT_DIR}\/
 like(http_get('/cgi-bin/env.sh?a=1&b=2'), qr/^QUERY_STRING="a=1&b=2"$/m, 'QUERY_STRING');
 like(http_get('/cgi-bin/env.sh'), qr/^REMOTE_ADDR="127.0.0.1"$/m, 'REMOTE_ADDR');
 # TODO: REMOTE_HOST
-# TODO: REMOTE_IDENT
 # TODO: REMOTE_USER
 like(http_get('/cgi-bin/env.sh'), qr/^REQUEST_METHOD="GET"$/m, 'REQUEST_METHOD');
 like(http_get('/cgi-bin/env.sh'), qr/^SCRIPT_NAME="\/cgi-bin\/env.sh"$/m, 'SCRIPT_NAME');
@@ -113,6 +112,9 @@ Host: localhost
 Connection: close
 
 EOF
+
+# other rfc3875 vars:
+#   REMOTE_IDENT: no plan to support, due to security reason
 
 # HTTP_ vars
 like(http(<<EOF), qr/^HTTP_ACCEPT="\*\/\*"$/m, 'HTTP_ACCEPT');
@@ -159,8 +161,6 @@ like(http_get('/cgi-bin/env.sh'), qr/^SERVER_ADDR="127.0.0.1"$/m, 'SERVER_ADDR')
 ###############################################################################
 # security tests
 
-# TODO: location tail / check
-# TODO: document root always starts with / or .
 # TODO: find correct script when tail / in root path
 # TODO: hop-by-hop header not allow in cgi output
 

@@ -564,7 +564,7 @@ static inline ngx_flag_t _add_env_port(ngx_http_cgi_ctx_t *ctx, const char *name
 
 static ngx_int_t
 ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
-    // there's 17 standard vars in rfc 3875
+    // there's 17 standard vars in rfc3875
     // apache2 exports 24 vars by default
     // 32 is a good choose, can fit all envs without resize in most cases
     const int                  init_array_size = 32;
@@ -653,8 +653,10 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
     // TODO: supports following vars
     // AUTH_TYPE
     // REMOTE_HOST
-    // REMOTE_IDENT
     // REMOTE_USER
+
+    // other rfc3875 vars:
+    //   REMOTE_IDENT: no plan to support, due to security reason
 
     // go through incoming headers, and convert add them to env
     part = &r->headers_in.headers.part;
