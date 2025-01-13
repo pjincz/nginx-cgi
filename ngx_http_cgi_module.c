@@ -675,17 +675,21 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
     }
 
     if (ctx->r->headers_in.authorization) {
-        if (ngx_http_auth_basic_user(r) == NGX_OK) {
-            if (ctx->r->headers_in.user.len) {
-                _add_env_const(ctx, "AUTH_TYPE", "Basic");
-                _add_env_nstr(ctx, "REMOTE_USER", &ctx->r->headers_in.user);
-            }
-        }
-        // TODO: add supports of Digest auth
-    }
+        // this field doesn't appear, if not auth module runs
+        // that's good, it has the same behaviour with apache2
+        if (ctx->r->headers_in.user.len) {
+            _add_env_nstr(ctx, "REMOTE_USER", &ctx->r->headers_in.user);
 
-    // TODO: supports following vars
-    // AUTH_TYPE
+            ngx_str_t auth_type = ctx->r->headers_in.authorization->value;
+            for (size_t i = 0; i < auth_type.len; ++i) {
+                if (auth_type.data[i] == ' ') {
+                    auth_type.len = i;
+                    break;
+                }
+            }
+            _add_env_nstr(ctx, "AUTH_TYPE", &auth_type);
+        }
+    }
 
     // other rfc3875 vars:
     //   REMOTE_IDENT: no plan to support, due to security reason

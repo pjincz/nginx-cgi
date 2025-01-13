@@ -7,6 +7,17 @@ accessed as `uri`. But that's really hard to impl on nginx, it need re-trigger
 nginx's location process. And those functions are private, cannot access by
 plugin directly. The another way to impl it is starting a sub-request, but it's
 too expensive, and this var is really rearly used. It's really not worth to do
-it. So I simply construct this var by document root and path_info vars.
+it. So I simply construct this var by document root and `path_info` vars.
 
 ## RDNS impl doesn't access /etc/hosts
+
+Nginx's resolver impl doesn't access /etc/hosts. I don't want to impl an extra
+resolver in plugin. So I just ignore this problem.
+
+## `REMOTE_USER` and `AUTH_TYPE` only appeared when `auth_basic` passed
+
+That's totally by design.
+
+## Doesn't support `Digest` `AUTH_TYPE`
+
+Nginx doesn't support...

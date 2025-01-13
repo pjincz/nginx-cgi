@@ -111,15 +111,16 @@ Connection: close
 
 EOF
 
-# REMOTE_USER
+# REMOTE_USER and AUTH_TYPE
+# Authorization header without auth enabled will not set auth related vars
 $r = http(<<EOF);
 GET /cgi-bin/env.sh HTTP/1.0
 Host: localhost
 Authorization: Basic YWFhOmJiYg==
 
 EOF
-like($r, qr/^REMOTE_USER="aaa"$/m, 'REMOTE_USER');
-like($r, qr/^AUTH_TYPE="Basic"$/m, 'AUTH_TYPE');
+unlike($r, qr/REMOTE_USER/m, 'no REMOTE_USER');
+unlike($r, qr/AUTH_TYPE/m, 'no AUTH_TYPE');
 
 # other rfc3875 vars:
 #   REMOTE_IDENT: no plan to support, due to security reason
