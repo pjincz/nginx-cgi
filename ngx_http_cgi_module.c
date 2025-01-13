@@ -674,12 +674,12 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
         _add_env_nstr(ctx, "PATH_TRANSLATED", &ctx->path_translated);
     }
 
-    if (ctx->r->headers_in.authorization) {
-        // this field doesn't appear, if not auth module runs
-        // that's good, it has the same behaviour with apache2
-        if (ctx->r->headers_in.user.len) {
-            _add_env_nstr(ctx, "REMOTE_USER", &ctx->r->headers_in.user);
+    // this field appears only if an auth module has been setup, and runs before
+    // cgi module. that's good, it has the same behaviour with apache2.
+    if (ctx->r->headers_in.user.len) {
+        _add_env_nstr(ctx, "REMOTE_USER", &ctx->r->headers_in.user);
 
+        if (ctx->r->headers_in.authorization) {
             ngx_str_t auth_type = ctx->r->headers_in.authorization->value;
             for (size_t i = 0; i < auth_type.len; ++i) {
                 if (auth_type.data[i] == ' ') {

@@ -163,7 +163,6 @@ like(http_get('/cgi-bin/env.sh'), qr/^SERVER_ADDR="127.0.0.1"$/m, 'SERVER_ADDR')
 ###############################################################################
 # security tests
 
-# TODO: find correct script when tail / in root path
 # TODO: hop-by-hop header not allow in cgi output
 
 # warn http_get('/cgi-bin/env.sh');
