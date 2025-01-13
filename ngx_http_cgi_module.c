@@ -674,9 +674,18 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
         _add_env_nstr(ctx, "PATH_TRANSLATED", &ctx->path_translated);
     }
 
+    if (ctx->r->headers_in.authorization) {
+        if (ngx_http_auth_basic_user(r) == NGX_OK) {
+            if (ctx->r->headers_in.user.len) {
+                _add_env_const(ctx, "AUTH_TYPE", "Basic");
+                _add_env_nstr(ctx, "REMOTE_USER", &ctx->r->headers_in.user);
+            }
+        }
+        // TODO: add supports of Digest auth
+    }
+
     // TODO: supports following vars
     // AUTH_TYPE
-    // REMOTE_USER
 
     // other rfc3875 vars:
     //   REMOTE_IDENT: no plan to support, due to security reason

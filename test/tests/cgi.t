@@ -13,7 +13,7 @@ use Test::Nginx;
 select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
-my $t = Test::Nginx->new()->plan(33);
+my $t = Test::Nginx->new()->plan(35);
 ok($t->has_module('cgi'), 'has cgi module');
 
 ###############################################################################
@@ -74,14 +74,12 @@ like(http_get('/../cgi-bin/hello.sh'), qr/\b400\b/m, 'hello');
 # environment var tests
 
 # rfc3875 vars
-# TODO: AUTH_TYPE
 like(http_get('/cgi-bin/env.sh'), qr/^GATEWAY_INTERFACE="CGI\/1.1"$/m, 'GATEWAY_INTERFACE');
 like(http_get('/cgi-bin/env.sh/aaa'), qr/^PATH_INFO="\/aaa"$/m, 'PATH_INFO');
 like(http_get('/cgi-bin/env.sh/aaa'), qr/^PATH_TRANSLATED="$ENV{TEST_ROOT_DIR}\/aaa"$/m, 'PATH_TRANSLATED');
 like(http_get('/cgi-bin/env.sh?a=1&b=2'), qr/^QUERY_STRING="a=1&b=2"$/m, 'QUERY_STRING');
 like(http_get('/cgi-bin/env.sh'), qr/^REMOTE_ADDR="127.0.0.1"$/m, 'REMOTE_ADDR');
 # TODO: REMOTE_HOST
-# TODO: REMOTE_USER
 like(http_get('/cgi-bin/env.sh'), qr/^REQUEST_METHOD="GET"$/m, 'REQUEST_METHOD');
 like(http_get('/cgi-bin/env.sh'), qr/^SCRIPT_NAME="\/cgi-bin\/env.sh"$/m, 'SCRIPT_NAME');
 like(http_get('/cgi-bin/env.sh'), qr/^SERVER_NAME="localhost"$/m, 'SERVER_NAME');
@@ -112,6 +110,16 @@ Host: localhost
 Connection: close
 
 EOF
+
+# REMOTE_USER
+$r = http(<<EOF);
+GET /cgi-bin/env.sh HTTP/1.0
+Host: localhost
+Authorization: Basic YWFhOmJiYg==
+
+EOF
+like($r, qr/^REMOTE_USER="aaa"$/m, 'REMOTE_USER');
+like($r, qr/^AUTH_TYPE="Basic"$/m, 'AUTH_TYPE');
 
 # other rfc3875 vars:
 #   REMOTE_IDENT: no plan to support, due to security reason
