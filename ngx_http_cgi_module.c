@@ -20,6 +20,12 @@
 #define CGI_STDERR_UNSET  -1
 #define CGI_STDERR_PIPE   -2
 
+#define CGI_RDNS_OFF       0
+#define CGI_RDNS_ON        1
+#define CGI_RDNS_DOUBLE    2
+
+#define CGI_DNS_TIMEOUT    30000  // 30 seconds
+
 
 #define _strieq(str, exp) \
     (ngx_strncasecmp((str).data, (u_char*)(exp), (str).len) == 0)
@@ -31,12 +37,13 @@ typedef int pipe_pair_t[2];
 
 
 typedef struct {
-    ngx_flag_t   enabled;
-    ngx_str_t    path;
-    ngx_flag_t   strict_mode;
-    ngx_array_t *interpreter;  // array<char *>
-    ngx_flag_t   x_only;
-    ngx_fd_t     cgi_stderr;
+    ngx_flag_t     enabled;
+    ngx_str_t      path;
+    ngx_flag_t     strict_mode;
+    ngx_array_t   *interpreter;  // array<char *>
+    ngx_flag_t     x_only;
+    ngx_fd_t       cgi_stderr;
+    ngx_int_t      rdns;
 } ngx_http_cgi_loc_conf_t;
 
 
@@ -69,6 +76,7 @@ typedef struct {
     ngx_str_t                      script;      // c compatible
     ngx_str_t                      path_info;
     ngx_str_t                      path_translated;
+    ngx_str_t                      remote_host;
 
     ngx_array_t                   *cmd;         // array<char*> with tail null
     ngx_array_t                   *env;         // array<char*> with tail null
@@ -99,13 +107,15 @@ typedef struct {
 } ngx_http_cgi_spwan_vars_t;
 
 
-static ngx_int_t ngx_http_cgi_handler(ngx_http_request_t *r);
+static ngx_int_t ngx_http_cgi_handler_1(ngx_http_request_t *r);
 static void *ngx_http_cgi_create_loc_conf(ngx_conf_t *cf);
 static char *ngx_http_cgi_merge_loc_conf(
     ngx_conf_t *cf, void *parent, void *child);
 static char * ngx_http_cgi_set_interpreter(
     ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char * ngx_http_cgi_set_stderr(
+    ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+static char * ngx_http_cgi_set_rdns(
     ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 
 
@@ -190,6 +200,30 @@ static ngx_command_t  ngx_http_cgi_commands[] = {
         offsetof(ngx_http_cgi_loc_conf_t, cgi_stderr),
         NULL
     },
+
+    // Enable or disable reverse dns
+    // cgi_rdns <off|on|double>
+    // off: disable rdns feature
+    // on: run reverse dns before launching cgi script, and pass rdns to cgi
+    //     script via `REMOTE_HOST` environment variable.
+    // double: after reverse dns, do a forward dns again to check the rdns
+    //         result. it result matches, pass result as `REMOTE_HOST`.
+    // In order to use this, you need to setup a `resolver` in nginx too.
+    //
+    // author notes: do not enable this option, it will makes every request
+    //               slower. this feature can be easily implemented by `dig -x`
+    //               or `nslookup` in script when need. the only reason I impled
+    //               this is just to make the module fully compliant with the
+    //               rfc3874 standard.
+    {
+        ngx_string("cgi_rdns"),
+        NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+        ngx_http_cgi_set_rdns,
+        NGX_HTTP_LOC_CONF_OFFSET,
+        offsetof(ngx_http_cgi_loc_conf_t, rdns),
+        NULL
+    },
+
 
     // TODO: add an option to disable following symbolic link?
     // TODO: add an option to report cgi error to client side?
@@ -611,6 +645,9 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
 
     _add_env_addr(ctx, "REMOTE_ADDR", con->sockaddr, con->socklen);
     _add_env_port(ctx, "REMOTE_PORT", con->sockaddr);
+    if (ctx->remote_host.len > 0) {
+        _add_env_nstr(ctx, "REMOTE_HOST", &ctx->remote_host);
+    }
 
     _add_env_nstr(ctx, "REQUEST_METHOD", &r->method_name);
 
@@ -652,7 +689,6 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
 
     // TODO: supports following vars
     // AUTH_TYPE
-    // REMOTE_HOST
     // REMOTE_USER
 
     // other rfc3875 vars:
@@ -1567,41 +1603,9 @@ ngx_http_cgi_stderr_data_handler(ngx_event_t *ev) {
 
 
 void
-ngx_http_cgi_handle_init(ngx_http_request_t *r) {
+ngx_http_cgi_handler_3(ngx_http_cgi_ctx_t *ctx) {
     ngx_int_t                  rc;
-    ngx_http_cgi_ctx_t        *ctx;
-
-    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
-                   "http cgi handle init");
-
-    ctx = ngx_http_get_module_ctx(r, ngx_http_cgi_module);
-    if (ctx == NULL) {
-        ctx = ngx_http_cgi_ctx_create(r->pool);
-        if (ctx == NULL) {
-            rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-            goto error;
-        }
-        ngx_http_set_ctx(r, ctx, ngx_http_cgi_module);
-    }
-
-    ctx->r = r;
-
-    ctx->conf = ngx_http_get_module_loc_conf(r, ngx_http_cgi_module);
-    if (ctx->conf == NULL) {
-        rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-        goto error;
-    }
-
-    ctx = ngx_http_get_module_ctx(r, ngx_http_cgi_module);
-    if (ctx == NULL) {
-        rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-        goto error;
-    }
-
-    rc = ngx_http_cgi_locate_script(ctx);
-    if (rc != NGX_OK) {
-        goto error;
-    }
+    ngx_http_request_t        *r = ctx->r;
 
     rc = ngx_http_cgi_prepare_cmd(ctx);
     if (rc != NGX_OK) {
@@ -1708,9 +1712,113 @@ ngx_http_cgi_handle_init(ngx_http_request_t *r) {
         }
     }
 
+    return;
+
+error:
+    ngx_http_finalize_request(r, rc);
+    return;
+}
+
+
+static void
+ngx_http_cgi_rdns_done(ngx_resolver_ctx_t *resolv) {
+    ngx_http_cgi_ctx_t        *ctx = resolv->data;
+    ngx_http_request_t        *r = ctx->r;
+    ngx_int_t                  rc = NGX_OK;
+
+    if (resolv->state == 0) {
+        ctx->remote_host.data = ngx_pstrdup(r->pool, &resolv->name);
+        if (ctx->remote_host.data == NULL) {
+            rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+            goto error;
+        }
+        ctx->remote_host.len = resolv->name.len;
+    } else {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                      "%V could not be resolved (%i: %s)",
+                      &r->connection->addr_text, resolv->state,
+                      ngx_resolver_strerror(resolv->state));
+    }
+    ngx_resolve_addr_done(resolv);
+
+    // TODO: double rdns impl
+
+    ngx_http_cgi_handler_3(ctx);
+    return;
+
+error:
+    ngx_http_finalize_request(r, rc);
+    return;
+}
+
+
+void
+ngx_http_cgi_handler_2(ngx_http_request_t *r) {
+    ngx_int_t                  rc;
+    ngx_http_cgi_ctx_t        *ctx;
+    ngx_resolver_ctx_t        *resolv;
+
+    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                   "http cgi handle init");
+
+    ctx = ngx_http_get_module_ctx(r, ngx_http_cgi_module);
+    if (ctx == NULL) {
+        ctx = ngx_http_cgi_ctx_create(r->pool);
+        if (ctx == NULL) {
+            rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+            goto error;
+        }
+        ngx_http_set_ctx(r, ctx, ngx_http_cgi_module);
+    }
+
+    ctx->r = r;
+
+    ctx->conf = ngx_http_get_module_loc_conf(r, ngx_http_cgi_module);
+    if (ctx->conf == NULL) {
+        rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+        goto error;
+    }
+
+    rc = ngx_http_cgi_locate_script(ctx);
+    if (rc != NGX_OK) {
+        goto error;
+    }
+
     // setup request body handler
     if (r->reading_body) {
         r->read_event_handler = ngx_http_cgi_request_body_handler;
+    }
+
+    if (ctx->conf->rdns >= CGI_RDNS_ON) {
+        ngx_http_core_loc_conf_t * clcf = ngx_http_get_module_loc_conf(
+            r, ngx_http_core_module);
+        if (!clcf) {
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                "get ngx_http_core_loc_conf_t failed");
+            rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+            goto error;
+        }
+
+        resolv = ngx_resolve_start(clcf->resolver, NULL);
+        if (resolv == NGX_NO_RESOLVER) {
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                "no resolver defined to resolve");
+            rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+            goto error;
+        }
+
+        resolv->addr.sockaddr = r->connection->sockaddr;
+        resolv->addr.socklen = r->connection->socklen;
+        resolv->handler = ngx_http_cgi_rdns_done;
+        resolv->data = ctx;
+        resolv->timeout = CGI_DNS_TIMEOUT;
+
+        rc = ngx_resolve_addr(resolv);
+        if (rc != NGX_OK) {
+            goto error;
+        }
+    } else {
+        ngx_http_cgi_handler_3(ctx);
     }
 
     return;
@@ -1722,12 +1830,12 @@ error:
 
 
 static ngx_int_t
-ngx_http_cgi_handler(ngx_http_request_t *r)
+ngx_http_cgi_handler_1(ngx_http_request_t *r)
 {
     ngx_int_t  rc;
 
     r->request_body_no_buffering = 1;
-    rc = ngx_http_read_client_request_body(r, ngx_http_cgi_handle_init);
+    rc = ngx_http_read_client_request_body(r, ngx_http_cgi_handler_2);
     if (rc >= NGX_HTTP_SPECIAL_RESPONSE) {
         return rc;
     }
@@ -1813,6 +1921,30 @@ ngx_http_cgi_set_stderr(ngx_conf_t *cf, ngx_command_t *cmd, void *c) {
 }
 
 
+static char *
+ngx_http_cgi_set_rdns(ngx_conf_t *cf, ngx_command_t *cmd, void *c) {
+    ngx_http_cgi_loc_conf_t  *conf = c;
+    ngx_str_t                *args = cf->args->elts;
+
+    if (conf->rdns != NGX_CONF_UNSET) {
+        return "is duplicate";
+    }
+
+    assert(cf->args->nelts == 2);
+    if (_strieq(args[1], "off")) {
+        conf->rdns = CGI_RDNS_OFF;
+    } else if (_strieq(args[1], "on")) {
+        conf->rdns = CGI_RDNS_ON;
+    } else if (_strieq(args[1], "double")) {
+        conf->rdns = CGI_RDNS_DOUBLE;
+    } else {
+        return "contains bad value. available values: off | on | double";
+    }
+
+    return NGX_CONF_OK;
+}
+
+
 static void *
 ngx_http_cgi_create_loc_conf(ngx_conf_t *cf)
 {
@@ -1829,6 +1961,7 @@ ngx_http_cgi_create_loc_conf(ngx_conf_t *cf)
     conf->interpreter = NGX_CONF_UNSET_PTR;
     conf->x_only = NGX_CONF_UNSET;
     conf->cgi_stderr = CGI_STDERR_UNSET;
+    conf->rdns = NGX_CONF_UNSET;
 
     return conf;
 }
@@ -1847,13 +1980,17 @@ ngx_http_cgi_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_conf_merge_ptr_value(conf->interpreter, prev->interpreter, NULL);
     ngx_conf_merge_value(conf->x_only, prev->x_only, 1);
     ngx_conf_merge_value(conf->cgi_stderr, prev->cgi_stderr, CGI_STDERR_PIPE);
+    ngx_conf_merge_value(conf->rdns, prev->rdns, CGI_RDNS_OFF);
 
     if (conf->enabled) {
         ngx_http_core_loc_conf_t  *clcf;
 
         clcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
+        if (clcf == NULL) {
+            return NGX_CONF_ERROR;
+        }
 
-        clcf->handler = ngx_http_cgi_handler;
+        clcf->handler = ngx_http_cgi_handler_1;
     }
 
     return NGX_CONF_OK;
