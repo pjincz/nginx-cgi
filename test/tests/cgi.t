@@ -13,7 +13,7 @@ use Test::Nginx;
 select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
-my $t = Test::Nginx->new()->plan(35);
+my $t = Test::Nginx->new()->plan(36);
 ok($t->has_module('cgi'), 'has cgi module');
 
 ###############################################################################
@@ -163,6 +163,4 @@ like(http_get('/cgi-bin/env.sh'), qr/^SERVER_ADDR="127.0.0.1"$/m, 'SERVER_ADDR')
 ###############################################################################
 # security tests
 
-# TODO: hop-by-hop header not allow in cgi output
-
-# warn http_get('/cgi-bin/env.sh');
+like(http_get('/cgi-bin/hop.sh'), qr/HTTP\/1\.[01] 500/m, 'hop-by-hop header not allowed');
