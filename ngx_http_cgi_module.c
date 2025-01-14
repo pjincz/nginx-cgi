@@ -638,7 +638,6 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
 
     _add_env_nstr(ctx, "REQUEST_METHOD", &r->method_name);
 
-    // TODO: need verify
     if (r->http_connection->ssl) {
         _add_env_const(ctx, "REQUEST_SCHEME", "https");
     } else {
