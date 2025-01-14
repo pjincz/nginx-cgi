@@ -68,8 +68,6 @@ EOF
 # security test: .. in uri should not go out of www dir
 like(http_get('/../cgi-bin/hello.sh'), qr/\b400\b/m, 'hello');
 
-# TODO: test rewrite (try_files)
-
 ###############################################################################
 # environment var tests
 
