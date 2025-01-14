@@ -153,12 +153,7 @@ like(http_get('/cgi-bin/env.sh'), qr/^SCRIPT_FILENAME="$ENV{TEST_ROOT_DIR}\/cgi-
 like(http_get('/cgi-bin/env.sh'), qr/^SERVER_ADDR="127.0.0.1"$/m, 'SERVER_ADDR');
 
 ###############################################################################
-# feature tests
+# misc tests
 
-# options
-# TODO: test cgi_stderr
-
-###############################################################################
-# security tests
-
+# security test: hop-by-hop header not allowed in cgi script output
 like(http_get('/cgi-bin/hop.sh'), qr/HTTP\/1\.[01] 500/m, 'hop-by-hop header not allowed');
