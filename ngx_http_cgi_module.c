@@ -11,8 +11,6 @@
 
 
 #define STACK_SIZE                  4096
-#define CHILD_PROCESS_CLONE_2_ERROR 1
-#define CHILD_PROCESS_EXEC_ERROR    2
 
 #define PIPE_READ_END      0
 #define PIPE_WRITE_END     1
@@ -105,7 +103,12 @@ typedef struct {
     ngx_http_cgi_ctx_t *ctx;
     char               *child_stack;
     char               *grandchild_stack;
-} ngx_http_cgi_spwan_vars_t;
+
+    pid_t               grandchild_pid;
+
+    const char         *descendant_error;
+    ngx_int_t           descendant_errno;
+} ngx_http_cgi_spawn_shared_ctx_t;
 
 
 static ngx_int_t ngx_http_cgi_handler_1(ngx_http_request_t *r);
@@ -325,13 +328,16 @@ ngx_http_cgi_ctx_create(ngx_pool_t *pool) {
 
 
 static int ngx_http_cgi_grandchild_proc(void *arg) {
-    ngx_http_cgi_ctx_t *ctx = arg;
+    ngx_http_cgi_spawn_shared_ctx_t *spawn_ctx = arg;
+    ngx_http_cgi_ctx_t *ctx = spawn_ctx->ctx;
     char **cmd = ctx->cmd->elts;
     char **env = ctx->env->elts;
 
     // Do not use `p` version here, to avoid security issue
     if (execve(cmd[0], cmd, env) == -1) {
-        _exit(CHILD_PROCESS_EXEC_ERROR);
+        spawn_ctx->descendant_error = "execve";
+        spawn_ctx->descendant_errno = errno;
+        _exit(0);
     }
 
     // never reaches here, just for elimating compiler warning
@@ -340,9 +346,8 @@ static int ngx_http_cgi_grandchild_proc(void *arg) {
 
 
 static int ngx_http_cgi_child_proc(void *arg) {
-    ngx_http_cgi_spwan_vars_t *vars = arg;
-    ngx_http_cgi_ctx_t *ctx = vars->ctx;
-    pid_t grandchild_pid = 0;
+    ngx_http_cgi_spawn_shared_ctx_t *spawn_ctx = arg;
+    ngx_http_cgi_ctx_t *ctx = spawn_ctx->ctx;
     int wstatus = 0;
     int rc = 0;
 
@@ -372,22 +377,23 @@ static int ngx_http_cgi_child_proc(void *arg) {
     // fork again to detch
     // again we cannot use fork/vfork here. The forked child process still
     // has signal handler for SIGCHLD
-    grandchild_pid = clone(ngx_http_cgi_grandchild_proc,
-            vars->grandchild_stack + STACK_SIZE,
-            CLONE_VM | CLONE_VFORK, ctx);
+    spawn_ctx->grandchild_pid = clone(ngx_http_cgi_grandchild_proc,
+            spawn_ctx->grandchild_stack + STACK_SIZE,
+            CLONE_VM | CLONE_VFORK, spawn_ctx);
 
-    if (grandchild_pid == -1) {
-        _exit(CHILD_PROCESS_CLONE_2_ERROR);
+    if (spawn_ctx->grandchild_pid == -1) {
+        spawn_ctx->descendant_error = "clone";
+        spawn_ctx->descendant_errno = errno;
+        _exit(0);
     }
 
     // clone returns after _exit or exec, if it failed, we can get the error
     // immediently.
     //  __WCLONE is required to wait cloned process
-    rc = waitpid(grandchild_pid, &wstatus, WNOHANG | __WCLONE);
+    rc = waitpid(spawn_ctx->grandchild_pid, &wstatus, WNOHANG | __WCLONE);
     if (rc > 0) {
-        // TODO: pass grandchild exit status to parent
-        // grandchild exits immediently after clone, exec is failed
-        _exit(CHILD_PROCESS_EXEC_ERROR);
+        // grandchild exec failed, forward exit code
+        _exit(WEXITSTATUS(wstatus));
     } else if (rc == 0) {
         // grandchild is running, that's good!
         _exit(0);
@@ -758,11 +764,11 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
 
 static ngx_int_t
 ngx_http_cgi_spawn_child_process(ngx_http_cgi_ctx_t *ctx) {
-    ngx_http_cgi_spwan_vars_t spawn_vars = {0};
-    pid_t                     child_pid = 0;
-    int                       wstatus = 0;
-    ngx_int_t                 rc = NGX_OK;
-    ngx_http_request_t       *r = ctx->r;
+    ngx_http_cgi_spawn_shared_ctx_t *spawn_ctx = 0;
+    pid_t                            child_pid = 0;
+    int                              wstatus = 0;
+    ngx_int_t                        rc = NGX_OK;
+    ngx_http_request_t              *r = ctx->r;
 
     // don't create stdin pipe if there's no body to save connections
     if ((r->request_body && r->request_body->bufs) || r->reading_body) {
@@ -788,10 +794,19 @@ ngx_http_cgi_spawn_child_process(ngx_http_cgi_ctx_t *ctx) {
         }
     }
 
-    spawn_vars.ctx = ctx;
-    spawn_vars.child_stack = malloc(STACK_SIZE);
-    spawn_vars.grandchild_stack = malloc(STACK_SIZE);
-    if (!spawn_vars.child_stack || !spawn_vars.grandchild_stack) {
+    spawn_ctx = mmap(NULL, sizeof(*spawn_ctx),
+            PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    if (!spawn_ctx) {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno, "mmap");
+        rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+        goto cleanup;
+    }
+    ngx_memzero(spawn_ctx, sizeof(*spawn_ctx));
+
+    spawn_ctx->ctx = ctx;
+    spawn_ctx->child_stack = malloc(STACK_SIZE);
+    spawn_ctx->grandchild_stack = malloc(STACK_SIZE);
+    if (!spawn_ctx->child_stack || !spawn_ctx->grandchild_stack) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno, "malloc");
         rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
         goto cleanup;
@@ -799,60 +814,50 @@ ngx_http_cgi_spawn_child_process(ngx_http_cgi_ctx_t *ctx) {
 
     // use clone instead of fork/vfork to avoid SIGCHLD be sent to nginx here
     child_pid = clone(ngx_http_cgi_child_proc,
-            spawn_vars.child_stack + STACK_SIZE,
-            CLONE_VM | CLONE_VFORK, &spawn_vars);
+            spawn_ctx->child_stack + STACK_SIZE,
+            CLONE_VM | CLONE_VFORK, spawn_ctx);
     if (child_pid == -1) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
                       "run cgi \"%V\" failed", &ctx->script);
         rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
         goto cleanup;
     }
-    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
-            "cgi spawn process: %d", child_pid);
+    if (spawn_ctx->descendant_error) {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log,
+                      spawn_ctx->descendant_errno, spawn_ctx->descendant_error);
+        rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+        goto cleanup;
+    }
+
+    ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+            "cgi process: %d", spawn_ctx->grandchild_pid);
 
     // child process will exit immediately after forking grandchild
     //  __WCLONE is required to wait cloned process
-    if (waitpid(child_pid, &wstatus, __WCLONE) == -1) {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
-                      "failed to clean child process");
-        rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-        goto cleanup;
-    }
-
-    if (WEXITSTATUS(wstatus) != 0) {
-        switch (WEXITSTATUS(wstatus)) {
-        case CHILD_PROCESS_CLONE_2_ERROR:
-            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                        "spawn process clone 2 failed");
-            break;
-        case CHILD_PROCESS_EXEC_ERROR:
-            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                        "spawn process exec failed");
-            break;
-        default:
-            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                        "spawn process unknown error");
-            break;
-        }
-        rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-        goto cleanup;
-    }
+    waitpid(child_pid, &wstatus, WNOHANG | __WCLONE);
 
     if (ctx->pipe_stdin[PIPE_READ_END] != -1) {
         close(ctx->pipe_stdin[PIPE_READ_END]);
         ctx->pipe_stdin[PIPE_READ_END] = -1;
     }
-    close(ctx->pipe_stdout[PIPE_WRITE_END]);
-    ctx->pipe_stdout[PIPE_WRITE_END] = -1;
-    close(ctx->pipe_stderr[PIPE_WRITE_END]);
-    ctx->pipe_stderr[PIPE_WRITE_END] = -1;
+    if (ctx->pipe_stdout[PIPE_WRITE_END] != -1) {
+        close(ctx->pipe_stdout[PIPE_WRITE_END]);
+        ctx->pipe_stdout[PIPE_WRITE_END] = -1;
+    }
+    if (ctx->pipe_stderr[PIPE_WRITE_END] != -1) {
+        close(ctx->pipe_stderr[PIPE_WRITE_END]);
+        ctx->pipe_stderr[PIPE_WRITE_END] = -1;
+    }
 
 cleanup:
-    if (spawn_vars.child_stack) {
-        free(spawn_vars.child_stack);
-    }
-    if (spawn_vars.grandchild_stack) {
-        free(spawn_vars.grandchild_stack);
+    if (spawn_ctx) {
+        if (spawn_ctx->child_stack) {
+            free(spawn_ctx->child_stack);
+        }
+        if (spawn_ctx->grandchild_stack) {
+            free(spawn_ctx->grandchild_stack);
+        }
+        munmap(spawn_ctx, sizeof(*spawn_ctx));
     }
     return rc;
 }
