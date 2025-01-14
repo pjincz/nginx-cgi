@@ -304,17 +304,13 @@ ngx_http_cgi_ctx_cleanup(void *data) {
 static ngx_http_cgi_ctx_t *
 ngx_http_cgi_ctx_create(ngx_pool_t *pool) {
     ngx_http_cgi_ctx_t *ctx;
-    ngx_pool_cleanup_t *cln;
 
-    cln = ngx_pool_cleanup_add(pool, sizeof(ngx_http_cgi_ctx_t));
-    if (cln == NULL) {
-        return NULL;
+    ctx = ngx_palloc(pool, sizeof(ngx_http_cgi_ctx_t));
+    if (!ctx) {
+        return ctx;
     }
 
-    ctx = cln->data;
     ngx_memzero(ctx, sizeof(ngx_http_cgi_ctx_t));
-
-    cln->handler = ngx_http_cgi_ctx_cleanup;
 
     ctx->pipe_stdin[0] = -1;
     ctx->pipe_stdin[1] = -1;
@@ -1846,33 +1842,8 @@ ngx_http_cgi_handler_2(ngx_http_request_t *r) {
     ngx_http_cgi_ctx_t        *ctx;
     ngx_resolver_ctx_t        *rctx;
 
-    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
-                   "http cgi handle init");
-
     ctx = ngx_http_get_module_ctx(r, ngx_http_cgi_module);
     if (ctx == NULL) {
-        ctx = ngx_http_cgi_ctx_create(r->pool);
-        if (ctx == NULL) {
-            rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-            goto error;
-        }
-        ngx_http_set_ctx(r, ctx, ngx_http_cgi_module);
-    }
-
-    ctx->r = r;
-
-    ctx->clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
-    if (!ctx->clcf) {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-            "get ngx_http_core_module loc conf failed");
-        rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-        goto error;
-    }
-
-    ctx->conf = ngx_http_get_module_loc_conf(r, ngx_http_cgi_module);
-    if (ctx->conf == NULL) {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-            "get ngx_http_cgi_module loc conf failed");
         rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
         goto error;
     }
@@ -1926,7 +1897,44 @@ error:
 static ngx_int_t
 ngx_http_cgi_handler_1(ngx_http_request_t *r)
 {
-    ngx_int_t  rc;
+    ngx_int_t            rc;
+    ngx_http_cgi_ctx_t  *ctx;
+    ngx_http_cleanup_t  *cln;
+
+    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                   "http cgi handle init");
+
+    ctx = ngx_http_get_module_ctx(r, ngx_http_cgi_module);
+    if (ctx == NULL) {
+        ctx = ngx_http_cgi_ctx_create(r->pool);
+        if (ctx == NULL) {
+            return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        }
+
+        cln = ngx_pcalloc(r->pool, sizeof(*cln));
+        cln->data = ctx;
+        cln->handler = ngx_http_cgi_ctx_cleanup;
+        cln->next = r->cleanup;
+        r->cleanup = cln;
+
+        ngx_http_set_ctx(r, ctx, ngx_http_cgi_module);
+    }
+
+    ctx->r = r;
+
+    ctx->clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
+    if (!ctx->clcf) {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+            "get ngx_http_core_module loc conf failed");
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    ctx->conf = ngx_http_get_module_loc_conf(r, ngx_http_cgi_module);
+    if (ctx->conf == NULL) {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+            "get ngx_http_cgi_module loc conf failed");
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
 
     r->request_body_no_buffering = 1;
     rc = ngx_http_read_client_request_body(r, ngx_http_cgi_handler_2);
