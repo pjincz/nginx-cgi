@@ -653,7 +653,8 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
     // unparsed_uri stores uri before rewriting
     // uri stores uri after rewriting
     _add_env_nstr(ctx, "REQUEST_URI", &r->unparsed_uri);
-    _add_env_nstr(ctx, "SCRIPT_NAME", &r->uri);
+    _add_env_str(ctx, "SCRIPT_NAME",
+                 (char*)r->uri.data, r->uri.len - ctx->path_info.len);
 
     _add_env_nstr(ctx, "SCRIPT_FILENAME", &ctx->script);
 

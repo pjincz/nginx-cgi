@@ -81,7 +81,7 @@ like(http_get('/cgi-bin/env.sh?a=1&b=2'), qr/^QUERY_STRING="a=1&b=2"$/m, 'QUERY_
 like(http_get('/cgi-bin/env.sh'), qr/^REMOTE_ADDR="127.0.0.1"$/m, 'REMOTE_ADDR');
 # TODO: REMOTE_HOST
 like(http_get('/cgi-bin/env.sh'), qr/^REQUEST_METHOD="GET"$/m, 'REQUEST_METHOD');
-like(http_get('/cgi-bin/env.sh'), qr/^SCRIPT_NAME="\/cgi-bin\/env.sh"$/m, 'SCRIPT_NAME');
+like(http_get('/cgi-bin/env.sh/asdf'), qr/^SCRIPT_NAME="\/cgi-bin\/env.sh"$/m, 'SCRIPT_NAME');
 like(http_get('/cgi-bin/env.sh'), qr/^SERVER_NAME="localhost"$/m, 'SERVER_NAME');
 like(http_get('/cgi-bin/env.sh'), qr/^SERVER_PORT="8080"$/m, 'SERVER_PORT');
 like(http_get('/cgi-bin/env.sh'), qr/^SERVER_SOFTWARE="nginx\/.*"$/m, 'SERVER_SOFTWARE');
