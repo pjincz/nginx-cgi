@@ -1,0 +1,24 @@
+Source: nginx-cgi
+Section: httpd
+Priority: optional
+Maintainer: Chizhong Jin <pjincz@gmail.com>
+Rules-Requires-Root: no
+Build-Depends:
+ debhelper-compat (= 13),
+ dh-sequence-nginx,
+Standards-Version: 4.6.2
+Homepage: https://github.com/pjincz/nginx-cgi
+#Vcs-Browser: https://salsa.debian.org/debian/nginx-cgi
+#Vcs-Git: https://salsa.debian.org/debian/nginx-cgi.git
+
+Package: libnginx-mod-http-cgi
+Architecture: any
+Depends:
+ ${shlibs:Depends},
+ ${misc:Depends},
+Description: brings CGI support to Nginx
+ CGI module brings CGI support to Nginx. With this module nginx can run cgi
+ scripts like apache or lighttpd. The implementation is fully compliant with the
+ rfc3874 stanndard.
+ .
+ See https://github.com/pjincz/nginx-cgi for more details

@@ -1,0 +1,11 @@
+# building dir
+/obj-*-linux-gnu/
+
+# debian build temp files
+/debian/files
+/debian/*.log
+/debian/*.debhelper
+/debian/*.substvars
+/debian/.debhelper/
+/debian/debhelper-build-stamp
+/debian/libnginx-mod-http-cgi/
