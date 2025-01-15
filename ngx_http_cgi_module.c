@@ -1485,7 +1485,7 @@ ngx_http_cgi_stdin_data_handler(ngx_event_t *ev) {
         ctx->c_stdin = NULL;
     }
 
-    if (!c->close && r->request_body->bufs) {
+    if (ctx->c_stdin && r->request_body->bufs) {
         // still more data need to be wrote
         ngx_handle_write_event(ctx->c_stdin->write, 0);
     }
@@ -1512,8 +1512,22 @@ ngx_http_cgi_request_body_handler(ngx_http_request_t *r) {
         goto error;
     }
 
-    if (ctx->c_stdin->write->ready) {
-        ngx_http_cgi_stdin_data_handler(ctx->c_stdin->write);
+    if (ctx->c_stdin) {
+        if (ctx->c_stdin->write->ready) {
+            ngx_http_cgi_stdin_data_handler(ctx->c_stdin->write);
+        }
+    } else {
+        // cgi script has closed the stdin, discard remain data
+        // it's not necessary to free buffers here, but it can help to reduce
+        // memory usage during a long connection
+        while (r->request_body && r->request_body->bufs) {
+            ngx_chain_t * next = r->request_body->bufs->next;
+            if (r->request_body->bufs->buf) {
+                ngx_pfree(r->pool, r->request_body->bufs->buf);
+            }
+            ngx_pfree(r->pool, r->request_body->bufs);
+            r->request_body->bufs = next;
+        }
     }
     return;
 
