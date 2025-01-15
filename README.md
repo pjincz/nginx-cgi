@@ -26,7 +26,7 @@ dpkg -i ../libnginx-mod-http-cgi_*_amd64.deb
 
 Enable cgi in nginx, add following section to /etc/nginx/sites-enabled/default:
 
-```
+```text
     root /var/www/html;
 
     location /cgi-bin {
@@ -71,29 +71,29 @@ usable deb package.
 
 1. Checkout nginx and this plugin
 
-```sh
-cd an-empty-dir
-git clone https://github.com/nginx/nginx
-git clone https://github.com/pjincz/nginx-cgi
-```
+   ```sh
+   cd an-empty-dir
+   git clone https://github.com/nginx/nginx
+   git clone https://github.com/pjincz/nginx-cgi
+   ```
 
 2. Generate makefile in nginx dir
 
-```sh
-cd nginx
-./auto/configure --add-dynamic-module=$PWD/../nginx-cgi [...other options...]
-```
+   ```sh
+   cd nginx
+   ./auto/configure --add-dynamic-module=$PWD/../nginx-cgi [...other option...]
+   ```
 
-If you want to debug the plugin, you may also want `--with-debug`.
+   If you want to debug the plugin, you may also want `--with-debug`.
 
-If you want to build a module compatible with system's nginx, you need run
-`nginx -V` to checkout system nginx's build options first.
+   If you want to build a module compatible with system's nginx, you need run
+   `nginx -V` to checkout system nginx's build options first.
 
 3. Make the binary
 
-```sh
-make
-```
+   ```sh
+   make
+   ```
 
 If everything is good, then you will find `ngx_http_cgi_module.so` under `objs`
 directory.
@@ -108,16 +108,16 @@ Otherwise, you need to manually load the plugin by `load_module`.
 
 Add following statement to nginx's top level context to load the plugin:
 
-```
+```text
 load_module <dir-of-plugin>/ngx_http_cgi_module.so;
 ```
 
 ### Enable cgi
 
-After loading the plugin, you can add `cgi on;` to location contexts to enable
+After loading the plugin, you can add `cgi on` to location contexts to enable
 cgi. Example:
 
-```
+```text
 location /cgi-bin {
     cgi on;
 }
@@ -128,14 +128,14 @@ on. If you want to disable cgi for a child location, just use `cgi off`.
 
 When the location is accessed, nginx-cgi will find the script under the document
 root (it's specified by `root` statement). For example, if you have specify the
-document root as `/var/www/html`, then you access `/cgi-bin/hello.sh`,
+document root as `/var/www/html`, then when you access `/cgi-bin/hello.sh`,
 `/var/www/html/cgi-bin/hello.sh` will be executed.
 
 Nginx-cgi also support `alias`, it like `root` statement in nginx, the only
 difference is the location prefix will be removed from uri. For example, if you
 want `/cgi/hello.sh` also reference to the same script, you can do this:
 
-```
+```text
 location /cgi {
     alias /var/www/html/cgi-bin;
     cgi on;
@@ -159,25 +159,25 @@ echo "Hello world"
 ```
 
 The first line of the script is shebang. If you clearly set `cgi_interpreter`,
-it's okay to remove this line, otherwise the missing of shebang will causes
-a 500 error. Some shell allows script be executable without shebang, but it's
-not allowed here. If a script runable by shell, but return 500 error, check
-the shebang.
+it's okay to remove this line, otherwise missing of shebang will causes a 500
+error. Some shell allows script be executable even without shebang, but it's not
+allowed here. If a script runable by shell, but return 500 error, check the
+shebang.
 
 The output of cgi script contains 2 sections: the header section and body
 section. The first 2 `echo` statements output the header section, and the last
-`echo` statement outputs the body section. The third `echo` statement outputs
-the separator. Both header section and body section can be empty, but the
-separator is mandatory. Missing of separator will causes an 500 error.
+`echo` statement outputs the body section. The `echo` statement in middle
+outputs the separator. Both header section and body section can be empty, but
+the separator is mandatory. Missing of separator will causes an 500 error.
 
 All lines in header section will be parsed as normal http response header line.
 And then passed to the client side. There's one sepcial header `Status`, it will
-be passed and appears in response status line. If `cgi_strict` is on, nginx-cgi
-will check all cgi output header, and causes 500 error if invalid header exists.
-Otherwise, invalid headers will be forwarded to client side too. If fully
+be passed in response status line. If `cgi_strict` is on, nginx-cgi will check
+all cgi output headers, and 500 error will be responsed if invalid header found.
+Otherwise, invalid headers will be forwarded to client side too. It's fully
 recommanded to keep `cgi_strict` on.
 
-After separator, all output will be sent to client as it is.
+After separator, all output will be sent to client as body as it is.
 
 ### x permission
 
@@ -194,15 +194,13 @@ This behaviour can be changed by turning off `cgi_x_only` option. If you want to
 do this, don't forget to set `cgi_interpreter` as well, otherwise you will got
 a 500 error.
 
-If you strictly follow the doc, you can try the cgi by `curl` now.
-
 ### Request header
 
-Request header will be parsed and then translated to environment variables and
+Request headers will be parsed and then translated to environment variables and
 then passed to cgi script.
 
 For example, you can find the query string in `QUERY_STRING` environment var.
-Also access `Http-Accept` by `HTTP_ACCPET`.
+And access `Http-Accept` by `HTTP_ACCPET`.
 
 Here's an example:
 
@@ -218,7 +216,7 @@ For full list of environment variables, see environment session.
 
 ### Request body
 
-The request body will be passed as stdin. Here's an example to read all request
+The request body will be passed via stdin. Here's an example to read all request
 body and echo it:
 
 ```sh
@@ -232,18 +230,18 @@ echo "request body: $body"
 
 ### Streaming
 
-Both request body and response body are streaming. For example, following script
-streamingly read request and write calc result by `bc`.
+Nginx-cgi has streaming support for both request and response body. For example,
+following script streamingly read request and write calc result by `bc`.
 
 ```sh
 #!/bin/sh
 echo ""
 
-bc >&1
+bc 2>&1
 ```
 
-Sadly, `curl` doesn't suport streaming request body, you can test it by
-following script:
+Unluckily, `curl` doesn't suport streaming request body, we can test it by a nc
+here:
 
 ```sh
 #!/bin/bash
@@ -270,9 +268,16 @@ function gen_request() {
 gen_request | nc "$IP" "$PORT"
 ```
 
-The output is a bit strange, but don't worries about it. The output contains
-encoding data, just because the test script prints tcp output directly. That's
-not an issue of cgi script itself.
+Save aboving script to `test-stm.sh`, and run:
+
+```sh
+chmod +x test-stm.sh
+./test-stm 127.0.0.1 80 /cgi-bin/bc.sh
+```
+
+You then have an interactive calculator over HTTP. The output is a bit weird,
+don't worries about it, it's standard chunked HTTP output. Normally it's hidden
+after HTTP library. That's not an issue of cgi script.
 
 The nginx-cgi plugin is smart enough to choose the correct way to return the
 request body. If it got all output soon enough, it will output the body in once.
@@ -395,7 +400,7 @@ This variable is really useful for dynamic content generating, for example you
 can write a script to index directory. Following nginx config can rewrite all
 directory access to an indexing script.
 
-```
+```text
 location / {
     if (-d $document_root$uri) {
         rewrite ^ /cgi-bin/index.sh$uri last;
@@ -549,7 +554,7 @@ Let's see how to do this:
 This is what apache do, we can do something similar by change `cgi_interpreter`
 to `/usr/bin/sudo`:
 
-```
+```text
 location /cgi-bin {
     cgi on;
     cgi_interpreter /usr/bin/sudo -E -n -u www -g www;
@@ -561,9 +566,9 @@ mode. `-u` and `-g` indicate user and group. In aboving example, all script
 will be run as `www:www`.
 
 Then you need add a sudo entry to allow those scripts be executed without
-password, for example, save following line to `/etc/sudoers.d/cgi-bin`:
+password, for example, save following line to `/etc/sudoers.d/www-data`:
 
-```
+```text
 www-data ALL=(www:www) NOPASSWD: SETENV: /var/www/html/cgi-bin/*
 ```
 
@@ -576,20 +581,11 @@ Now you all your cgi script will be run with root user.
 
 But, this way is a bit too dangerous.
 
-#### Run cgi script with default user, and put super power scripts to a special directory
+#### Run cgi script with default user, grant special power when needed
 
-It's much better do run cgi script with default permission. We can add another
-directory that contains script that can be invoked by cgi scripts, and has super
-power. Eg, put all sbin script to `/var/www/sbin`, and allow them be invoked by
-`www-data`. This will be more secure.
-
-Save following line to /etc/sudoers.d/www-sbin
-
-```
-www-data ALL=(ALL) NOPASSWD: /var/www/sbin/*
-```
-
-Here's an example shows how to poweroff machine in CGI script.
+It's much better do run cgi script with default permission. And then grant
+special sudo permission when needed. Here's an example how to implement a CGI
+program to poweroff the machine.
 
 `/var/www/html/cgi-bin/poweroff.sh`:
 
@@ -612,23 +608,14 @@ exec <&- >&-
 sleep 5
 
 # poweroff machine
-sudo /var/www/sbin/poweroff
+sudo /usr/sbin/poweroff
 ```
 
-`/var/www/sbin/poweroff`:
+`/etc/sudoers.d/www-data`:
 
-```bash
-#!/bin/sh
-
-poweroff
+```text
+www-data ALL=(ALL) NOPASSWD: /usr/sbin/poweroff
 ```
-
-`/etc/sudoers.d/www-sbin`:
-
-```
-www-data ALL=(ALL) NOPASSWD: /var/www/sbin/*
-```
-
 
 ## Known Issues
 
@@ -648,25 +635,30 @@ resolver in plugin. So I just ignore this problem.
 
 ## Reference
 
+## rfc3875
+
+<https://datatracker.ietf.org/doc/html/rfc3875>
+
 ### nginx
-https://nginx.org/en/docs/dev/development_guide.html
-https://hg.nginx.org/nginx-tests
+
+<https://nginx.org/en/docs/dev/development_guide.html>
+<https://hg.nginx.org/nginx-tests>
 
 ### Hop-by-hop headers
 
-https://datatracker.ietf.org/doc/html/rfc2616#section-13.5.1
+<https://datatracker.ietf.org/doc/html/rfc2616#section-13.5.1>
 
 ### CGI environments
 
-https://datatracker.ietf.org/doc/html/rfc3875#section-4.1
+<https://datatracker.ietf.org/doc/html/rfc3875#section-4.1>
 
 ### Apache CGI
 
-https://httpd.apache.org/docs/2.4/howto/cgi.html
+<https://httpd.apache.org/docs/2.4/howto/cgi.html>
 
 ### Lighttpd CGI
 
-https://redmine.lighttpd.net/projects/lighttpd/wiki/Mod_cgi
+<https://redmine.lighttpd.net/projects/lighttpd/wiki/Mod_cgi>
 
 ## License
 
