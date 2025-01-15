@@ -6,7 +6,7 @@ Brings CGI support to Nginx.
 
 Build and install:
 
-```
+```sh
 # checkout source code
 git clone https://github.com/pjincz/nginx-cgi
 cd nginx-cgi
@@ -27,6 +27,8 @@ dpkg -i ../libnginx-mod-http-cgi_*_amd64.deb
 Enable cgi in nginx, add following section to /etc/nginx/sites-enabled/default:
 
 ```
+    root /var/www/html;
+
     location /cgi-bin {
             cgi on;
     }
@@ -34,13 +36,13 @@ Enable cgi in nginx, add following section to /etc/nginx/sites-enabled/default:
 
 And restart nginx:
 
-```
+```sh
 systemctl restart nginx
 ```
 
 Save following content to /var/www/html/cgi-bin/hello.sh
 
-```
+```sh
 #!/bin/bash
 
 echo "Content-Type: text/plain"
@@ -51,13 +53,13 @@ echo hello
 
 Add x perm to cgi script:
 
-```
+```sh
 chmod +x /var/www/html/cgi-bin/hello.sh
 ```
 
 Try it:
 
-```
+```sh
 curl http://127.0.0.1/cgi-bin/hello.sh
 ```
 
@@ -69,7 +71,7 @@ usable deb package.
 
 1. Checkout nginx and this plugin
 
-```
+```sh
 cd an-empty-dir
 git clone https://github.com/nginx/nginx
 git clone https://github.com/pjincz/nginx-cgi
@@ -77,7 +79,7 @@ git clone https://github.com/pjincz/nginx-cgi
 
 2. Generate makefile in nginx dir
 
-```
+```sh
 cd nginx
 ./auto/configure --add-dynamic-module=$PWD/../nginx-cgi [...other options...]
 ```
@@ -89,7 +91,7 @@ If you want to build a module compatible with system's nginx, you need run
 
 3. Make the binary
 
-```
+```sh
 make
 ```
 
@@ -124,11 +126,29 @@ location /cgi-bin {
 Once cgi turned on on a location, all nested locations will also have cgi turned
 on. If you want to disable cgi for a child location, just use `cgi off`.
 
-### Hello script
+When the location is accessed, nginx-cgi will find the script under the document
+root (it's specified by `root` statement). For example, if you have specify the
+document root as `/var/www/html`, then you access `/cgi-bin/hello.sh`,
+`/var/www/html/cgi-bin/hello.sh` will be executed.
 
-A cgi script can be wrotten by any language. Here's an exmaple with shell.
+Nginx-cgi also support `alias`, it like `root` statement in nginx, the only
+difference is the location prefix will be removed from uri. For example, if you
+want `/cgi/hello.sh` also reference to the same script, you can do this:
 
 ```
+location /cgi {
+    alias /var/www/html/cgi-bin;
+    cgi on;
+}
+```
+
+### Hello script
+
+A cgi script can be wrotten by any language. Here's an exmaple with shell. You
+can save it to `/var/www/html/cgi-bin/hello.sh` for testing (if you didn't
+change the default document root):
+
+```sh
 #!/bin/sh
 
 echo "Content-Type: text/plain"
@@ -163,8 +183,8 @@ After separator, all output will be sent to client as it is.
 
 After all, you need to add the x permission to the file:
 
-```
-chmod +x <your-script>
+```sh
+chmod +x /var/www/html/cgi-bin/hello.sh
 ```
 
 Nginx-cgi will check file's x permission before executing it. If the file has
@@ -186,7 +206,7 @@ Also access `Http-Accept` by `HTTP_ACCPET`.
 
 Here's an example:
 
-```
+```sh
 #!/bin/sh
 echo ""
 
@@ -201,7 +221,7 @@ For full list of environment variables, see environment session.
 The request body will be passed as stdin. Here's an example to read all request
 body and echo it:
 
-```
+```sh
 #!/bin/sh
 echo ""
 
@@ -215,7 +235,7 @@ echo "request body: $body"
 Both request body and response body are streaming. For example, following script
 streamingly read request and write calc result by `bc`.
 
-```
+```sh
 #!/bin/sh
 echo ""
 
@@ -225,7 +245,7 @@ bc >&1
 Sadly, `curl` doesn't suport streaming request body, you can test it by
 following script:
 
-```
+```sh
 #!/bin/bash
 
 IP=$1
@@ -494,6 +514,121 @@ The full path to script.
 
 Server ip address. If the server has multiple ip addresses. The value of this
 variable can be different if requests come from different interface.
+
+## Tricks
+
+### Find all environment variables
+
+Save following script to your cgi directory (eg, `/cgi-bin/env.sh`).
+
+```sh
+#!/bin/sh
+
+echo 'Content-Type: text/plain'
+echo
+
+export
+```
+
+### Do action with root permission
+
+CGI is really good for system management. So it's inevitable to do something
+with root or other user's permission.
+
+Apache has a special mod `mod_suexec` for this purpose. It can launch cgi
+scripts with other user and group. It uses a sepcial `suexec` binary to archive
+this.
+
+But nowadays, `sudo` is really popular, and it almost pre-installed in other
+Linux distributions. I think it's a better replacement of `suexec`.
+
+Let's see how to do this:
+
+#### Run cgi script under another user and group **NOT RECOMMANDED**
+
+This is what apache do, we can do something similar by change `cgi_interpreter`
+to `/usr/bin/sudo`:
+
+```
+location /cgi-bin {
+    cgi on;
+    cgi_interpreter /usr/bin/sudo -E -n -u www -g www;
+}
+```
+
+`-E` is used to preserve cgi vars. And `-n` is used to indicate non-interactive
+mode. `-u` and `-g` indicate user and group. In aboving example, all script
+will be run as `www:www`.
+
+Then you need add a sudo entry to allow those scripts be executed without
+password, for example, save following line to `/etc/sudoers.d/cgi-bin`:
+
+```
+www-data ALL=(www:www) NOPASSWD: SETENV: /var/www/html/cgi-bin/*
+```
+
+This line indicates that: `www-data` user can run all scripts under
+`/var/www/html/cgi-bin` with `www` user `www` group without password. `SETENV`
+is required here, because we need to pass CGI environment variables to the
+script.
+
+Now you all your cgi script will be run with root user.
+
+But, this way is a bit too dangerous.
+
+#### Run cgi script with default user, and put super power scripts to a special directory
+
+It's much better do run cgi script with default permission. We can add another
+directory that contains script that can be invoked by cgi scripts, and has super
+power. Eg, put all sbin script to `/var/www/sbin`, and allow them be invoked by
+`www-data`. This will be more secure.
+
+Save following line to /etc/sudoers.d/www-sbin
+
+```
+www-data ALL=(ALL) NOPASSWD: /var/www/sbin/*
+```
+
+Here's an example shows how to poweroff machine in CGI script.
+
+`/var/www/html/cgi-bin/poweroff.sh`:
+
+```bash
+#!/bin/sh
+
+# do whatever authorization you want here
+
+# response header and body
+echo 'Content-Type: text/plain'
+echo
+echo 'machine will be powered off in 5s'
+
+# close stdin and stdout to tell nginx-cgi there's no more input and output
+# needed, nginx-cgi will send the response to the client immediently without
+# waiting of script finish
+exec <&- >&-
+
+# add a sleep before poweroff, to let nginx have time to send response
+sleep 5
+
+# poweroff machine
+sudo /var/www/sbin/poweroff
+```
+
+`/var/www/sbin/poweroff`:
+
+```bash
+#!/bin/sh
+
+poweroff
+```
+
+`/etc/sudoers.d/www-sbin`:
+
+```
+www-data ALL=(ALL) NOPASSWD: /var/www/sbin/*
+```
+
 
 ## Known Issues
 
