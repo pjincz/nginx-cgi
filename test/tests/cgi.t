@@ -85,6 +85,9 @@ like(http_get('/cgi-bin/env.sh'), qr/^SERVER_NAME="localhost"$/m, 'SERVER_NAME')
 like(http_get('/cgi-bin/env.sh'), qr/^SERVER_PORT="8080"$/m, 'SERVER_PORT');
 like(http_get('/cgi-bin/env.sh'), qr/^SERVER_SOFTWARE="nginx\/.*"$/m, 'SERVER_SOFTWARE');
 
+# TODO: more tests for SERVER_NAME
+# TODO: more tests for SERVER_PROTOCOL
+
 # CONTENT_LENGTH && CONTENT_TYPE
 my $r = http(<<EOF);
 GET /cgi-bin/env.sh HTTP/1.0
