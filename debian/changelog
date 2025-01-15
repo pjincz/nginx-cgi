@@ -1,3 +1,10 @@
+nginx-cgi (0.2) unstable; urgency=medium
+
+  * Added a lot of unit tests.
+  * Fixed all issues found with unit tests.
+
+ -- Chizhong Jin <pjincz@gmail.com>  Wed, 15 Jan 2025 19:16:28 +0800
+
 nginx-cgi (0.1) UNRELEASED; urgency=medium
 
   * Initial release.
