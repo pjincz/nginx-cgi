@@ -13,7 +13,7 @@ use Test::Nginx;
 select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
-my $t = Test::Nginx->new()->plan(36);
+my $t = Test::Nginx->new()->plan(37);
 ok($t->has_module('cgi'), 'has cgi module');
 
 ###############################################################################
@@ -49,6 +49,7 @@ $t->run();
 
 like(http_get('/cgi-bin/hello.sh'), qr/^hello$/m, 'hello');
 like(http_get('/cgi-bin/not-exists.sh'), qr/HTTP\/1\.[01] 404/m, 'not found');
+like(http_get('/cgi-bin/not-file.sh'), qr/HTTP\/1\.[01] 404/m, 'not found');
 like(http_get('/cgi-bin/no-perm.sh'), qr/HTTP\/1\.[01] 403/m, 'no perm');
 like(http_get('/cgi-bin/bad.sh'), qr/HTTP\/1\.[01] 500/m, 'bad cgi');
 like(http_get('/cgi-bin/302.sh'), qr/HTTP\/1\.[01] 302/m, 'redirect');
