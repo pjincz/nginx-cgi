@@ -13,7 +13,7 @@ use Test::Nginx;
 select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
-my $t = Test::Nginx->new()->plan(45);
+my $t = Test::Nginx->new()->plan(46);
 ok($t->has_module('cgi'), 'has cgi module');
 
 ###############################################################################
@@ -206,3 +206,13 @@ like(http_get('/cgi-bin/env.sh'), qr/^SERVER_ADDR="127.0.0.1"$/m, 'SERVER_ADDR')
 
 # security test: hop-by-hop header not allowed in cgi script output
 like(http_get('/cgi-bin/hop.sh'), qr/HTTP\/1\.[01] 500/m, 'hop-by-hop header not allowed');
+
+unlike(http(<<EOF), qr/TRANSFER_ENCODING/m, 'no Transfer-Encoding');
+POST /cgi-bin/env.sh HTTP/1.1
+Host: localhost
+Connection: close
+Content-Type: plain/text
+Transfer-Encoding: chunked
+
+0\r\n\r\n
+EOF

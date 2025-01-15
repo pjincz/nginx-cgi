@@ -24,11 +24,24 @@
 
 #define CGI_DNS_TIMEOUT    30000  // 30 seconds
 
+static const char *_ngx_http_cgi_hopbyhop_hdrs[] = {
+    "Keep-Alive",
+    "Transfer-Encoding",
+    "TE",
+    "Connection",
+    "Trailer",
+    "Upgrade",
+    // I should parse Connection header, and ignore all headers list in
+    // Connection. But I'm too lazy to this...
+    "HTTP2-Settings"
+};
+
 
 #define _strieq(str, exp) \
     (ngx_strncasecmp((str).data, (u_char*)(exp), (str).len) == 0)
 #define _ngx_str_last_ch(nstr) \
     ((nstr).len > 0 ? (nstr).data[(nstr).len - 1] : 0)
+#define _countof(a) (sizeof(a)/sizeof(a[0]))
 
 
 typedef int pipe_pair_t[2];
@@ -713,8 +726,9 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
     ngx_str_t                  server_name;
 
     ngx_list_part_t           *part;
-    ngx_uint_t                 i;
+    ngx_uint_t                 i, j;
     ngx_table_elt_t           *v;
+    ngx_flag_t                 hop_by_hop_hdr;
 
     srcf = ngx_http_get_module_srv_conf(r, ngx_http_core_module);
     if (srcf == NULL) {
@@ -821,6 +835,18 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
             part = part->next;
             v = part->elts;
             i = 0;
+        }
+
+        hop_by_hop_hdr = 0;
+        for (j = 0; j < _countof(_ngx_http_cgi_hopbyhop_hdrs); ++j) {
+            if (_strieq(v[i].key, _ngx_http_cgi_hopbyhop_hdrs[j])) {
+                // hop-by-hop header should not forward to cgi script
+                hop_by_hop_hdr = 1;
+                break;
+            }
+        }
+        if (hop_by_hop_hdr) {
+            continue;
         }
 
         if (_strieq(v[i].key, "Content-Length")) {
@@ -1238,17 +1264,16 @@ ngx_http_cgi_scan_header(ngx_http_cgi_ctx_t *ctx) {
             line.data = scan->header_name_start;
             line.len = scan->header_end - scan->header_name_start;
 
-            if (_strieq(name, "Keep-Alive") ||
-                _strieq(name, "Transfer-Encoding") ||
-                _strieq(name, "TE") ||
-                _strieq(name, "Connection") ||
-                _strieq(name, "Trailer") ||
-                _strieq(name, "Upgrade")) {
-                ngx_log_error(NGX_LOG_ERR, ctx->r->connection->log, 0,
-                        "hop-by-hop header is not avalid in cgi response: %V",
-                        &line);
-                return NGX_HTTP_INTERNAL_SERVER_ERROR;
-            } else if (_strieq(name, "Status")) {
+            for (size_t i = 0; i < _countof(_ngx_http_cgi_hopbyhop_hdrs); ++i) {
+                if (_strieq(name, _ngx_http_cgi_hopbyhop_hdrs[i])) {
+                    ngx_log_error(NGX_LOG_ERR, ctx->r->connection->log, 0,
+                            "hop-by-hop header is not avalid in cgi response: %V",
+                            &line);
+                    return NGX_HTTP_INTERNAL_SERVER_ERROR;
+                }
+            }
+
+            if (_strieq(name, "Status")) {
                 r->headers_out.status_line.len =
                         scan->header_end - scan->header_start;
                 r->headers_out.status_line.data = ngx_palloc(
