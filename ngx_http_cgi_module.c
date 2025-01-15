@@ -566,13 +566,21 @@ static inline void _add_env_int(ngx_http_cgi_ctx_t *ctx, const char *name, int v
     sprintf(buf, "%d", val);
     _add_env_str(ctx, name, buf, -1);
 }
-static inline void _add_env_addr(ngx_http_cgi_ctx_t *ctx, const char *name, struct sockaddr * sa, socklen_t socklen) {
+static inline void _add_env_addr(ngx_http_cgi_ctx_t *ctx, const char *name, struct sockaddr * sa, socklen_t socklen, ngx_flag_t bracket_ipv6) {
     ngx_int_t addr_len;
     // max ipv6 is 39 bytes
     // max sun_path is 108 bytes
     u_char addr[128];
 
-    addr_len = ngx_sock_ntop(sa, socklen, addr, sizeof(addr), 0);
+    if (sa->sa_family == AF_INET6 && bracket_ipv6) {
+        addr[0] = '[';
+        addr_len = ngx_sock_ntop(sa, socklen, addr + 1, sizeof(addr) - 2, 0);
+        addr[1 + addr_len] = ']';
+        addr[1 + addr_len + 1] = 0;
+        addr_len = addr_len + 2;
+    } else {
+        addr_len = ngx_sock_ntop(sa, socklen, addr, sizeof(addr), 0);
+    }
     _add_env_str(ctx, name, (char*)addr, addr_len);
 }
 static inline ngx_flag_t _add_env_port(ngx_http_cgi_ctx_t *ctx, const char *name, struct sockaddr * sa) {
@@ -591,6 +599,104 @@ static inline ngx_flag_t _add_env_port(ngx_http_cgi_ctx_t *ctx, const char *name
 }
 
 
+static ngx_str_t
+ngx_http_cgi_server_name_from_host_header(ngx_table_elt_t *host) {
+    ngx_str_t empty = ngx_null_string;
+    ngx_str_t result;
+
+    ngx_int_t name_start = -1;
+    ngx_int_t name_end = -1;
+    ngx_int_t status = 0;
+
+    enum {
+        s_start = 0,
+        s_ipv6,
+        s_domain_or_ipv4,
+        s_ipv6_end,
+        s_port,
+        s_done
+    };
+
+    if (!host || host->value.len == 0) {
+        return empty;
+    }
+
+    for (size_t i = 0; i <= host->value.len; ++i) {
+        char ch = i < host->value.len ? host->value.data[i] : 0;
+
+        switch (status) {
+            case s_start:
+                if (ch == '[') {
+                    status = s_ipv6;
+                    name_start = i;
+                } else if (isalnum(ch) || ch =='.' || ch == '-') {
+                    status = s_domain_or_ipv4;
+                    name_start = i;
+                } else {
+                    // bad input
+                    return empty;
+                }
+                break;
+            case s_ipv6:
+                if (isxdigit(ch) || ch == ':') {
+                    // continue
+                } else if (ch == ']') {
+                    status = s_ipv6_end;
+                } else {
+                    // bad input
+                    return empty;
+                }
+                break;
+            case s_domain_or_ipv4:
+                if (isalnum(ch) || ch == '.' || ch == '-') {
+                    // continue
+                } else if (ch == ':') {
+                    status = s_port;
+                    name_end = i;
+                } else if (ch == 0) {
+                    status = s_done;
+                    name_end = i;
+                } else {
+                    // bad input
+                    return empty;
+                }
+                break;
+            case s_ipv6_end:
+                if (ch == ':') {
+                    status = s_port;
+                    name_end = i;
+                } else if (ch == 0) {
+                    status = s_done;
+                } else {
+                    // bad input
+                    return empty;
+                }
+                break;
+            case s_port:
+                if (isdigit(ch)) {
+                    // conttinue
+                } else if (ch == 0) {
+                    status = s_done;
+                } else {
+                    // bad input
+                    return empty;
+                }
+                break;
+            default:
+                return empty;
+        }
+    }
+
+    if (status != s_done) {
+        return empty;
+    }
+
+    result.data = host->value.data + name_start;
+    result.len = name_end - name_start;
+    return result;
+}
+
+
 static ngx_int_t
 ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
     // there's 17 standard vars in rfc3875
@@ -603,6 +709,8 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
 
     struct sockaddr_storage    local_addr;
     socklen_t                  local_addr_len;
+
+    ngx_str_t                  server_name;
 
     ngx_list_part_t           *part;
     ngx_uint_t                 i;
@@ -632,7 +740,7 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
 
     _add_env_nstr(ctx, "QUERY_STRING", &r->args);
 
-    _add_env_addr(ctx, "REMOTE_ADDR", con->sockaddr, con->socklen);
+    _add_env_addr(ctx, "REMOTE_ADDR", con->sockaddr, con->socklen, 0);
     _add_env_port(ctx, "REMOTE_PORT", con->sockaddr);
     if (ctx->remote_host.len > 0) {
         _add_env_nstr(ctx, "REMOTE_HOST", &ctx->remote_host);
@@ -655,14 +763,19 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
     _add_env_nstr(ctx, "SCRIPT_FILENAME", &ctx->script);
 
     if (local_addr_len > 0) {
-        _add_env_addr(ctx, "SERVER_ADDR", (void*)&local_addr, local_addr_len);
+        _add_env_addr(
+            ctx, "SERVER_ADDR", (void*)&local_addr, local_addr_len, 0);
         _add_env_port(ctx, "SERVER_PORT", (void*)&local_addr);
     }
 
-    if (srcf->server_name.len > 0) {
-        _add_env_nstr(ctx, "SERVER_NAME", &srcf->server_name);
-    } else if (local_addr_len > 0) {
-        _add_env_addr(ctx, "SERVER_NAME", (void*)&local_addr, local_addr_len);
+    server_name = ngx_http_cgi_server_name_from_host_header(r->headers_in.host);
+    if (server_name.len > 0) {
+        _add_env_nstr(ctx, "SERVER_NAME", &server_name);
+    } else {
+        // If Host header doesn't present or doesn't contains server name, use
+        // reflict server ip.
+        _add_env_addr(
+            ctx, "SERVER_NAME", (void*)&local_addr, local_addr_len, 1);
     }
 
     _add_env_nstr(ctx, "SERVER_PROTOCOL", &r->http_protocol);

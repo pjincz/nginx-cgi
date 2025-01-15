@@ -467,7 +467,10 @@ The only reason to use this is construct the URI after rewriting. You can use
 
 * `SERVER_NAME` (rfc3875 standard)
 
-Server name, normally it equals to `Host` header without port part.
+Server name, normally it equals to `Host` header without port part. If `Host`
+header doesn't appear in the request (HTTP/1.0) or contains invalid value, then
+this value is set to the reflect server ip address. If the ip address is an ipv6
+address, it will be quoted with bracket like `[::1]`.
 
 * `SERVER_PORT` (rfc3875 standard)
 

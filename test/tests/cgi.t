@@ -13,7 +13,7 @@ use Test::Nginx;
 select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
-my $t = Test::Nginx->new()->plan(37);
+my $t = Test::Nginx->new()->plan(45);
 ok($t->has_module('cgi'), 'has cgi module');
 
 ###############################################################################
@@ -81,11 +81,56 @@ like(http_get('/cgi-bin/env.sh'), qr/^REMOTE_ADDR="127.0.0.1"$/m, 'REMOTE_ADDR')
 # TODO: REMOTE_HOST
 like(http_get('/cgi-bin/env.sh'), qr/^REQUEST_METHOD="GET"$/m, 'REQUEST_METHOD');
 like(http_get('/cgi-bin/env.sh/asdf'), qr/^SCRIPT_NAME="\/cgi-bin\/env.sh"$/m, 'SCRIPT_NAME');
-like(http_get('/cgi-bin/env.sh'), qr/^SERVER_NAME="localhost"$/m, 'SERVER_NAME');
 like(http_get('/cgi-bin/env.sh'), qr/^SERVER_PORT="8080"$/m, 'SERVER_PORT');
 like(http_get('/cgi-bin/env.sh'), qr/^SERVER_SOFTWARE="nginx\/.*"$/m, 'SERVER_SOFTWARE');
 
-# TODO: more tests for SERVER_NAME
+# SERVER_NAME
+like(http(<<EOF), qr/^SERVER_NAME="localhost"$/m, 'SERVER_NAME localhost');
+GET /cgi-bin/env.sh HTTP/1.0
+Host: localhost
+
+EOF
+like(http(<<EOF), qr/^SERVER_NAME="localhost"$/m, 'SERVER_NAME localhost:8000');
+GET /cgi-bin/env.sh HTTP/1.0
+Host: localhost:8000
+
+EOF
+like(http(<<EOF), qr/^SERVER_NAME="fake.com"$/m, 'SERVER_NAME fake.com');
+GET /cgi-bin/env.sh HTTP/1.0
+Host: fake.com
+
+EOF
+like(http(<<EOF), qr/^SERVER_NAME="fake.com"$/m, 'SERVER_NAME fake.com:8000');
+GET /cgi-bin/env.sh HTTP/1.0
+Host: fake.com:8000
+
+EOF
+like(http(<<EOF), qr/^SERVER_NAME="127.0.0.1"$/m, 'SERVER_NAME 127.0.0.1');
+GET /cgi-bin/env.sh HTTP/1.0
+Host: 127.0.0.1
+
+EOF
+like(http(<<EOF), qr/^SERVER_NAME="127.0.0.1"$/m, 'SERVER_NAME 127.0.0.1:8000');
+GET /cgi-bin/env.sh HTTP/1.0
+Host: 127.0.0.1:8000
+
+EOF
+like(http(<<EOF), qr/^SERVER_NAME="\[::1\]"$/m, 'SERVER_NAME [::1]');
+GET /cgi-bin/env.sh HTTP/1.0
+Host: [::1]
+
+EOF
+like(http(<<EOF), qr/^SERVER_NAME="\[::1\]"$/m, 'SERVER_NAME [::1]:8000');
+GET /cgi-bin/env.sh HTTP/1.0
+Host: [::1]:8000
+
+EOF
+like(http(<<EOF), qr/^SERVER_NAME="127.0.0.1"$/m, 'SERVER_NAME no host');
+GET /cgi-bin/env.sh HTTP/1.0
+
+EOF
+# TODO: test SERVER_NAME with ipv6 here
+
 # TODO: more tests for SERVER_PROTOCOL
 
 # CONTENT_LENGTH && CONTENT_TYPE
