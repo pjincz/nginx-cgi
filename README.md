@@ -15,6 +15,7 @@ cd nginx-cgi
 sudo apt install build-essential devscripts dpkg-dev fakeroot -y
 
 # install build dependencies
+# if you haven't installed nginx before, this command will install nginx either
 sudo apt build-dep . -y
 
 # build with debuild
@@ -24,17 +25,38 @@ debuild -us -uc
 dpkg -i ../libnginx-mod-http-cgi_*_amd64.deb 
 ```
 
-Enable cgi in nginx, add following section to /etc/nginx/sites-enabled/default:
+Then enable cgi in nginx. If you have a newly installed nginx, you can find a
+default site at /etc/nginx/sites-enabled/default. The default one looks like
+this:
 
 ```text
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+
     root /var/www/html;
 
+    index index.html index.htm index.nginx-debian.html;
+
+    server_name _;
+
+    location / {
+        try_files $uri $uri/ =404;
+    }
+}
+```
+
+The default `root` points to `/var/www/html`, keep it as it as, and add
+following section after `location /` section.
+
+```text
     location /cgi-bin {
-            cgi on;
+        cgi on;
     }
 ```
 
-And restart nginx:
+The newly added section means, for all request under `/cgi-bin`, turns on cgi
+support. Now restart nginx:
 
 ```sh
 systemctl restart nginx
@@ -48,7 +70,7 @@ Save following content to /var/www/html/cgi-bin/hello.sh
 echo "Content-Type: text/plain"
 echo
 
-echo hello
+echo Hello CGI
 ```
 
 Add x perm to cgi script:
@@ -57,11 +79,13 @@ Add x perm to cgi script:
 chmod +x /var/www/html/cgi-bin/hello.sh
 ```
 
-Try it:
+Now, try it:
 
 ```sh
 curl http://127.0.0.1/cgi-bin/hello.sh
 ```
+
+If you nothing wrong, you will get an output of `Hello CGI`.
 
 ## Build
 
