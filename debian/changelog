@@ -1,3 +1,11 @@
+nginx-cgi (0.3) unstable; urgency=medium
+
+  * Add cgi_set_var option to allow user custom cgi var.
+  * Re-implement SERVER_NAME var.
+  * Disable hop-by-hop header be forwarded to CGI script.
+
+ -- Chizhong Jin <pjincz@gmail.com>  Sat, 18 Jan 2025 23:40:19 +0800
+
 nginx-cgi (0.2) unstable; urgency=medium
 
   * Added a lot of unit tests.
