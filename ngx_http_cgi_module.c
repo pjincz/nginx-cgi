@@ -48,6 +48,12 @@ typedef int pipe_pair_t[2];
 
 
 typedef struct {
+    ngx_str_t                        name;
+    ngx_http_complex_value_t         combine;  // name=value
+} ngx_http_cgi_ext_var_t;
+
+
+typedef struct {
     ngx_flag_t     enabled;
     ngx_str_t      path;
     ngx_flag_t     strict_mode;
@@ -55,6 +61,8 @@ typedef struct {
     ngx_flag_t     x_only;
     ngx_fd_t       cgi_stderr;
     ngx_int_t      rdns;
+
+    ngx_array_t   *ext_vars;  // array<ngx_http_cgi_ext_var_t>
 } ngx_http_cgi_loc_conf_t;
 
 
@@ -133,6 +141,8 @@ static char * ngx_http_cgi_set_interpreter(
 static char * ngx_http_cgi_set_stderr(
     ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char * ngx_http_cgi_set_rdns(
+    ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+static char * ngx_http_cgi_add_var(
     ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 
 
@@ -238,6 +248,17 @@ static ngx_command_t  ngx_http_cgi_commands[] = {
         ngx_http_cgi_set_rdns,
         NGX_HTTP_LOC_CONF_OFFSET,
         offsetof(ngx_http_cgi_loc_conf_t, rdns),
+        NULL
+    },
+
+    // cgi_set_var <name> <expr>
+    // Pass extra environment variables to CGI script.
+    {
+        ngx_string("cgi_set_var"),
+        NGX_HTTP_LOC_CONF | NGX_CONF_TAKE2,
+        ngx_http_cgi_add_var,
+        NGX_HTTP_LOC_CONF_OFFSET,
+        offsetof(ngx_http_cgi_loc_conf_t, ext_vars),
         NULL
     },
 
@@ -551,6 +572,7 @@ ngx_http_cgi_prepare_cmd(ngx_http_cgi_ctx_t *ctx) {
 
 
 #define _add_env_const(ctx, name, val) *(char**)ngx_array_push(ctx->env) = (name "=" val)
+#define _add_env_combine(ctx, combine) *(char**)ngx_array_push(ctx->env) = combine;
 static void _add_env_str(ngx_http_cgi_ctx_t *ctx, const char *name, const char *val, int val_len) {
     char *line;
     char *p;
@@ -888,6 +910,25 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
             }
 
             _add_env_nstr(ctx, (char*)name, &v[i].value);
+        }
+    }
+
+    // add custom vars
+    // TODO: add vars from parent conf
+    if (ctx->conf->ext_vars) {
+        size_t nvar = ctx->conf->ext_vars->nelts;
+        ngx_http_cgi_ext_var_t *vars = ctx->conf->ext_vars->elts;
+
+        for (size_t i = 0; i < nvar; ++i) {
+            ngx_str_t combine;
+
+            if (ngx_http_complex_value(
+                    r, &vars[i].combine, &combine) != NGX_OK) {
+                return NGX_HTTP_INTERNAL_SERVER_ERROR;
+            }
+            // when I compile cv, it contains a 0 tail, so the eval result
+            // should contains 0 tail too.
+            _add_env_combine(ctx, (char*)combine.data);
         }
     }
 
@@ -2194,6 +2235,75 @@ ngx_http_cgi_set_rdns(ngx_conf_t *cf, ngx_command_t *cmd, void *c) {
     } else {
         return "contains bad value. available values: off | on | double";
     }
+
+    return NGX_CONF_OK;
+}
+
+
+static ngx_flag_t
+ngx_http_cgi_is_valid_env_name(ngx_str_t *name) {
+    if (name->len <= 0) {
+        return 0;
+    }
+
+    if (!isalpha(name->data[0]) && name->data[0] != '_') {
+        return 0;
+    }
+
+    for (size_t i = 1; i < name->len; ++i) {
+        if (!isalnum(name->data[i]) && name->data[i] != '_') {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+
+static char *
+ngx_http_cgi_add_var(ngx_conf_t *cf, ngx_command_t *cmd, void *c) {
+    ngx_http_cgi_loc_conf_t            *conf = c;
+    ngx_str_t                          *args = cf->args->elts;
+    ngx_str_t                           combine;
+    ngx_http_compile_complex_value_t    ccv;
+
+    if (!conf->ext_vars) {
+        conf->ext_vars = ngx_array_create(
+            cf->pool, 4, sizeof(ngx_http_cgi_ext_var_t));
+        if (!conf->ext_vars) {
+            return NGX_CONF_ERROR;
+        }
+    }
+
+    ngx_http_cgi_ext_var_t *ext_var = ngx_array_push(conf->ext_vars);
+    if (!ext_var) {
+        return NGX_CONF_ERROR;
+    }
+
+    if (!ngx_http_cgi_is_valid_env_name(&args[1])) {
+        return "invalid var name";
+    }
+    ext_var->name = args[1];
+
+    combine.len = args[1].len + 1 + args[2].len + 1;
+    combine.data = ngx_palloc(cf->pool, combine.len);
+    if (!combine.data) {
+        return NGX_CONF_ERROR;
+    }
+    ngx_memcpy(combine.data, args[1].data, args[1].len);
+    combine.data[args[1].len] = '=';
+    ngx_memcpy(combine.data + args[1].len + 1, args[2].data, args[2].len);
+    combine.data[args[1].len + 1 + args[2].len] = 0;
+
+    ngx_memzero(&ccv, sizeof(ccv));
+    ccv.cf = cf;
+    ccv.value = &combine;
+    ccv.complex_value = &ext_var->combine;
+    if (ngx_http_compile_complex_value(&ccv) != NGX_OK) {
+        return NGX_CONF_ERROR;
+    }
+
+    // keep combine var, it referenced by conf->combine
 
     return NGX_CONF_OK;
 }
