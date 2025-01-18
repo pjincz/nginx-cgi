@@ -2,6 +2,27 @@
 
 Brings CGI support to Nginx.
 
+## Before everything
+
+CGI is neither a demon nor an angel. It is simply a tool. Just like a chef's
+knife in the hands of a cook or a sword in the hands of a warrior, you won't use
+a sword for cooking, nor you take a chef's knife to the battlefield. The same
+goes for CGI, it has its appropriate scenarios, and it should not be misused or
+demonized.
+
+CGI is good for:
+
+* Low frequency applications, such as system management
+* Resource limited systems, such as embeding system
+* Low budget projects, such as personal website
+* Prototyping, for fast iterate
+
+CGI is bad for:
+
+* High QPS
+* High traffic
+* High concurrency
+
 ## Quick start (with Debian 12+, Ubuntu 24.04+)
 
 Build and install:
@@ -26,7 +47,7 @@ dpkg -i ../libnginx-mod-http-cgi_*_amd64.deb
 ```
 
 Then enable cgi in nginx. If you have a newly installed nginx, you can find a
-default site at /etc/nginx/sites-enabled/default. The default one looks like
+default site at `/etc/nginx/sites-enabled/default`. The default one looks like
 this:
 
 ```text
