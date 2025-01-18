@@ -53,7 +53,9 @@ typedef struct {
 } ngx_http_cgi_ext_var_t;
 
 
-typedef struct {
+typedef struct ngx_http_cgi_loc_conf_s {
+    struct ngx_http_cgi_loc_conf_s * prev;
+
     ngx_flag_t     enabled;
     ngx_str_t      path;
     ngx_flag_t     strict_mode;
@@ -733,6 +735,44 @@ ngx_http_cgi_server_name_from_host_header(ngx_table_elt_t *host) {
 
 
 static ngx_int_t
+ngx_http_cgi_add_custom_vars(
+    ngx_http_cgi_ctx_t *ctx, ngx_http_cgi_loc_conf_t *conf)
+{
+    ngx_int_t               rc;
+    size_t                  nvar;
+    ngx_http_cgi_ext_var_t *vars;
+
+    if (conf->prev) {
+        rc = ngx_http_cgi_add_custom_vars(ctx, conf->prev);
+        if (rc != NGX_OK) {
+            return rc;
+        }
+    }
+
+    if (!conf->ext_vars) {
+        return NGX_OK;
+    }
+
+    nvar = conf->ext_vars->nelts;
+    vars = conf->ext_vars->elts;
+
+    for (size_t i = 0; i < nvar; ++i) {
+        ngx_str_t combine;
+
+        if (ngx_http_complex_value(
+                ctx->r, &vars[i].combine, &combine) != NGX_OK) {
+            return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        }
+        // when I compile cv, it contains a 0 tail, so the eval result
+        // should contains 0 tail too.
+        _add_env_combine(ctx, (char*)combine.data);
+    }
+
+    return NGX_OK;
+}
+
+
+static ngx_int_t
 ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
     // there's 17 standard vars in rfc3875
     // apache2 exports 24 vars by default
@@ -741,6 +781,7 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
     ngx_http_request_t        *r = ctx->r;
     ngx_connection_t          *con = r->connection;
     ngx_http_core_srv_conf_t  *srcf;
+    ngx_int_t                  rc;
 
     struct sockaddr_storage    local_addr;
     socklen_t                  local_addr_len;
@@ -913,23 +954,9 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
         }
     }
 
-    // add custom vars
-    // TODO: add vars from parent conf
-    if (ctx->conf->ext_vars) {
-        size_t nvar = ctx->conf->ext_vars->nelts;
-        ngx_http_cgi_ext_var_t *vars = ctx->conf->ext_vars->elts;
-
-        for (size_t i = 0; i < nvar; ++i) {
-            ngx_str_t combine;
-
-            if (ngx_http_complex_value(
-                    r, &vars[i].combine, &combine) != NGX_OK) {
-                return NGX_HTTP_INTERNAL_SERVER_ERROR;
-            }
-            // when I compile cv, it contains a 0 tail, so the eval result
-            // should contains 0 tail too.
-            _add_env_combine(ctx, (char*)combine.data);
-        }
+    rc = ngx_http_cgi_add_custom_vars(ctx, ctx->conf);
+    if (rc != NGX_OK) {
+        return rc;
     }
 
     // an extra null string, required by exec
@@ -2326,6 +2353,7 @@ ngx_http_cgi_create_loc_conf(ngx_conf_t *cf)
     conf->x_only = NGX_CONF_UNSET;
     conf->cgi_stderr = CGI_STDERR_UNSET;
     conf->rdns = NGX_CONF_UNSET;
+    conf->ext_vars = NULL;
 
     return conf;
 }
@@ -2337,6 +2365,8 @@ ngx_http_cgi_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_http_cgi_loc_conf_t  *prev = parent;
     ngx_http_cgi_loc_conf_t  *conf = child;
     ngx_http_core_loc_conf_t  *clcf;
+
+    conf->prev = prev;
 
     ngx_conf_merge_value(conf->enabled, prev->enabled, 0);
     ngx_conf_merge_str_value(conf->path, prev->path,

@@ -341,19 +341,19 @@ For more information:
 
 ### Options
 
-* `cgi <on|off>`
+#### `cgi <on|off>`
 
 Enable or disable cgi module on giving location block.
 
 Default: off
 
-* `cgi_path <PATH>`
+#### `cgi_path <PATH>`
 
 Change cgi script PATH environment variable
 
 Default: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-* `cgi_strict <on|off>`
+#### `cgi_strict <on|off>`
 
 Enable or disable strict mode.
 
@@ -362,7 +362,7 @@ turns off, bad cgi header be forward as it is.
 
 Default: on
 
-* `cgi_interpreter <interpreter> [args...]`
+#### `cgi_interpreter <interpreter> [args...]`
 
 Set interpreter and interpreter args for cgi script.
 
@@ -371,7 +371,7 @@ Otherwise, script will be executed directly.
 
 Default: empty
 
-* `cgi_x_only <on|off>`
+#### `cgi_x_only <on|off>`
 
 Enable or disable x-only mode.
 
@@ -382,7 +382,20 @@ meanful if `cgi_interpreter` is set.
 
 Default: on
 
-* `cgi_stderr <path>`
+#### `cgi_set_var <name> <value>`
+
+Add and pass extra environment variables to CGI script. The first argument of
+this command is the name of final environment variable. It should contains only
+alphabets, numbers and underscore, and doesn't start with number. The second
+argument of this command is the value express of the var. It can contains nginx
+variables, see <https://nginx.org/en/docs/varindex.html> for more details.
+
+This option can appears more than 1 time to set multiple variables. If more than
+one option set the same var, then the last one works. If more than one location
+specified the same var, the nested one works. The option also can be used to
+override standard CGI vars.
+
+#### `cgi_stderr <path>`
 
 Redirect cgi stderr to giving file.
 
@@ -393,7 +406,7 @@ option to redirect cgi script's stderr output to a file. Or you can even discard
 all stderr output by redirect to `/dev/null`. Also you can use this to redirect
 all stderr output to nginx's stderr by set it as `/dev/stderr`.
 
-* `cgi_rdns <on|off|double>`
+#### `cgi_rdns <on|off|double>`
 
 Enable or disable reverse dns.
 
@@ -413,7 +426,11 @@ author notes: do not enable this option, it will makes every request slower.
               in script when need. the only reason I impled this is just to make
               the module fully compliant with the rfc3874 standard.
 
-### Environment Variables
+### Standard Environment Variables
+
+Nginx-cgi implemented almost all rfc3875 standard variables. If they cannot
+cover all of your usage, you can add your own variable by `cgi_set_var`. Also
+you can override standard variables by `cgi_set_var` if you want.
 
 * `AUTH_TYPE`, `REMOTE_USER` (rfc3875 standard)
 

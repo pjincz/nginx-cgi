@@ -34,11 +34,14 @@ http {
         listen       127.0.0.1:8080;
         server_name  localhost;
 
-        location /cgi-bin {
-            cgi on;
+        location / {
             cgi_set_var XXX "123";
-            cgi_set_var YYY "$remote_addr";
-            cgi_set_var QUERY_STRING "123";
+            cgi_set_var YYY "123";
+            location /cgi-bin {
+                cgi on;
+                cgi_set_var YYY "$remote_addr";
+                cgi_set_var QUERY_STRING "123";
+            }
         }
     }
 }
