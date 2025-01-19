@@ -10,7 +10,7 @@
 #include <assert.h>
 
 
-#define STACK_SIZE                  4096
+#define STACK_SIZE         (1024 * 16)
 
 #define PIPE_READ_END      0
 #define PIPE_WRITE_END     1
@@ -1008,10 +1008,10 @@ ngx_http_cgi_spawn_child_process(ngx_http_cgi_ctx_t *ctx) {
     ngx_memzero(spawn_ctx, sizeof(*spawn_ctx));
 
     spawn_ctx->ctx = ctx;
-    spawn_ctx->child_stack = malloc(STACK_SIZE);
-    spawn_ctx->grandchild_stack = malloc(STACK_SIZE);
+    spawn_ctx->child_stack = ngx_palloc(r->pool, STACK_SIZE);
+    spawn_ctx->grandchild_stack = ngx_palloc(r->pool, STACK_SIZE);
     if (!spawn_ctx->child_stack || !spawn_ctx->grandchild_stack) {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno, "malloc");
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno, "ngx_palloc");
         rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
         goto cleanup;
     }
@@ -1056,10 +1056,10 @@ ngx_http_cgi_spawn_child_process(ngx_http_cgi_ctx_t *ctx) {
 cleanup:
     if (spawn_ctx) {
         if (spawn_ctx->child_stack) {
-            free(spawn_ctx->child_stack);
+            ngx_pfree(r->pool, spawn_ctx->child_stack);
         }
         if (spawn_ctx->grandchild_stack) {
-            free(spawn_ctx->grandchild_stack);
+            ngx_pfree(r->pool, spawn_ctx->grandchild_stack);
         }
         munmap(spawn_ctx, sizeof(*spawn_ctx));
     }
