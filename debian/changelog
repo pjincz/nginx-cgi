@@ -1,3 +1,9 @@
+nginx-cgi (0.5) unstable; urgency=medium
+
+  * Add `required` flag to `cgi_rdns`, allow user to enforce rdns
+
+ -- Chizhong Jin <pjincz@gmail.com>  Sat, 19 Jan 2025 20:03:00 +0800
+
 nginx-cgi (0.4) unstable; urgency=medium
 
   * Fixed: stack overflow when works with ssl
