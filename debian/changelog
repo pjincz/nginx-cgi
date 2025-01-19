@@ -1,3 +1,9 @@
+nginx-cgi (0.4) unstable; urgency=medium
+
+  * Fixed: stack overflow when works with ssl
+
+ -- Chizhong Jin <pjincz@gmail.com>  Sat, 19 Jan 2025 19:18:00 +0800
+
 nginx-cgi (0.3) unstable; urgency=medium
 
   * Add cgi_set_var option to allow user custom cgi var.
