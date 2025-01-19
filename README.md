@@ -406,7 +406,7 @@ option to redirect cgi script's stderr output to a file. Or you can even discard
 all stderr output by redirect to `/dev/null`. Also you can use this to redirect
 all stderr output to nginx's stderr by set it as `/dev/stderr`.
 
-#### `cgi_rdns <on|off|double>`
+#### `cgi_rdns <on|off|double> [required]`
 
 Enable or disable reverse dns.
 
@@ -417,6 +417,9 @@ on: Run reverse dns before launching cgi script, and pass rdns to cgi script via
 
 double: After reverse dns, do a forward dns again to check the rdns result. it
         result matches, pass result as `REMOTE_HOST`.
+
+required: If rdns failed, 403, 503 or 500 returns to the client. Depends on the
+          failure reason of rdns
 
 If you turns on this option, you need to setup a `resolver` in nginx too.
 Otherwise you will get an error of `no resolver defined to resolve`.

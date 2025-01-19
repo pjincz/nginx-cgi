@@ -21,6 +21,7 @@
 #define CGI_RDNS_OFF       0
 #define CGI_RDNS_ON        1
 #define CGI_RDNS_DOUBLE    2
+#define CGI_RDNS_REQUIRED  4
 
 #define CGI_DNS_TIMEOUT    30000  // 30 seconds
 
@@ -231,12 +232,14 @@ static ngx_command_t  ngx_http_cgi_commands[] = {
     },
 
     // Enable or disable reverse dns
-    // cgi_rdns <off|on|double>
+    // cgi_rdns <off|on|double> [required]
     // off: disable rdns feature
     // on: run reverse dns before launching cgi script, and pass rdns to cgi
     //     script via `REMOTE_HOST` environment variable.
     // double: after reverse dns, do a forward dns again to check the rdns
     //         result. it result matches, pass result as `REMOTE_HOST`.
+    // required: If rdns failed, 403, 503 or 500 returns to the client. Depends
+    //           on the failure reason of rdns.
     // In order to use this, you need to setup a `resolver` in nginx too.
     //
     // author notes: do not enable this option, it will makes every request
@@ -246,7 +249,7 @@ static ngx_command_t  ngx_http_cgi_commands[] = {
     //               rfc3874 standard.
     {
         ngx_string("cgi_rdns"),
-        NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+        NGX_HTTP_LOC_CONF | NGX_CONF_TAKE12,
         ngx_http_cgi_set_rdns,
         NGX_HTTP_LOC_CONF_OFFSET,
         offsetof(ngx_http_cgi_loc_conf_t, rdns),
@@ -1995,8 +1998,17 @@ ngx_http_cgi_rdns_confirm_done(ngx_resolver_ctx_t *rctx) {
         ctx->remote_host.len = 0;
     }
 
-    ngx_http_cgi_handler_3(ctx);
-    return;
+    if (ctx->remote_host.len == 0 && (ctx->conf->rdns & CGI_RDNS_REQUIRED)) {
+        ngx_int_t rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+        if (rctx->state == NGX_RESOLVE_TIMEDOUT) {
+            rc = NGX_HTTP_SERVICE_UNAVAILABLE;
+        } else if (rctx->state == NGX_RESOLVE_NXDOMAIN) {
+            rc = NGX_HTTP_FORBIDDEN;
+        }
+        ngx_http_finalize_request(r, rc);
+    } else {
+        ngx_http_cgi_handler_3(ctx);
+    }
 }
 
 
@@ -2021,7 +2033,7 @@ ngx_http_cgi_rdns_done(ngx_resolver_ctx_t *rctx) {
     }
     ngx_resolve_addr_done(rctx);
 
-    if (ctx->remote_host.len > 0 && ctx->conf->rdns >= CGI_RDNS_DOUBLE) {
+    if (ctx->remote_host.len > 0 && (ctx->conf->rdns & CGI_RDNS_DOUBLE)) {
         rctx = ngx_resolve_start(ctx->clcf->resolver, NULL);
         if (rctx == NGX_NO_RESOLVER) {
             ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
@@ -2044,7 +2056,18 @@ ngx_http_cgi_rdns_done(ngx_resolver_ctx_t *rctx) {
         if (rc != NGX_OK) {
             goto error;
         }
-    } else {
+    } else if (ctx->remote_host.len == 0 &&
+               (ctx->conf->rdns & CGI_RDNS_REQUIRED))
+    {
+        if (rctx->state == NGX_RESOLVE_TIMEDOUT) {
+            rc = NGX_HTTP_SERVICE_UNAVAILABLE;
+        } else if (rctx->state == NGX_RESOLVE_NXDOMAIN) {
+            rc = NGX_HTTP_FORBIDDEN;
+        } else {
+            rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+        }
+        goto error;
+    }else {
         ngx_http_cgi_handler_3(ctx);
     }
 
@@ -2078,7 +2101,7 @@ ngx_http_cgi_handler_2(ngx_http_request_t *r) {
         r->read_event_handler = ngx_http_cgi_request_body_handler;
     }
 
-    if (ctx->conf->rdns >= CGI_RDNS_ON) {
+    if (ctx->conf->rdns & CGI_RDNS_ON) {
         rctx = ngx_resolve_start(ctx->clcf->resolver, NULL);
         if (rctx == NGX_NO_RESOLVER) {
             ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
@@ -2252,15 +2275,27 @@ ngx_http_cgi_set_rdns(ngx_conf_t *cf, ngx_command_t *cmd, void *c) {
         return "is duplicate";
     }
 
-    assert(cf->args->nelts == 2);
+    assert(cf->args->nelts >= 2);
     if (_strieq(args[1], "off")) {
         conf->rdns = CGI_RDNS_OFF;
     } else if (_strieq(args[1], "on")) {
         conf->rdns = CGI_RDNS_ON;
     } else if (_strieq(args[1], "double")) {
-        conf->rdns = CGI_RDNS_DOUBLE;
+        conf->rdns = CGI_RDNS_ON | CGI_RDNS_DOUBLE;
     } else {
-        return "contains bad value. available values: off | on | double";
+        return "'s first argument can only be: off | on | double";
+    }
+
+    if (cf->args->nelts >= 3) {
+        if (_strieq(args[2], "required")) {
+            if (conf->rdns & CGI_RDNS_ON) {
+                conf->rdns |= CGI_RDNS_REQUIRED;
+            } else {
+                return "required can only works with on|double";
+            }
+        } else {
+            return "'s second argument can only be required";
+        }
     }
 
     return NGX_CONF_OK;
