@@ -276,7 +276,7 @@ echo "request body: $body"
 ### Streaming
 
 Nginx-cgi has streaming support for both request and response body. For example,
-following script streamingly read request and write calc result by `bc`.
+we can implement a simplest online caculator by `bc`:
 
 ```sh
 #!/bin/sh
@@ -285,44 +285,11 @@ echo ""
 bc 2>&1
 ```
 
-Unluckily, `curl` doesn't suport streaming request body, we can test it by a nc
-here:
+Then we can test our caculator by `curl`:
 
 ```sh
-#!/bin/bash
-
-IP=$1
-PORT=$2
-URI=$3
-
-function gen_request() {
-    printf "POST $URI HTTP/1.1\r\n"
-    printf "Host: $IP:$PORT\r\n"
-    printf "Transfer-Encoding: chunked\r\n"
-    printf "Content-Type: text/plain\r\n"
-    printf "Connection: close\r\n"
-    printf "\r\n"
-
-    while IFS= read -r line; do
-        printf "%x\r\n%s\n\r\n" "$((${#line}+1))" "$line"
-    done
-
-    printf "0\r\n\r\n"
-}
-
-gen_request | nc "$IP" "$PORT"
+curl 127.0.0.1/cgi-bin/bc.sh --no-progress-meter -T .
 ```
-
-Save aboving script to `test-stm.sh`, and run:
-
-```sh
-chmod +x test-stm.sh
-./test-stm 127.0.0.1 80 /cgi-bin/bc.sh
-```
-
-You then have an interactive calculator over HTTP. The output is a bit weird,
-don't worries about it, it's standard chunked HTTP output. Normally it's hidden
-after HTTP library. That's not an issue of cgi script.
 
 The nginx-cgi plugin is smart enough to choose the correct way to return the
 request body. If it got all output soon enough, it will output the body in once.
