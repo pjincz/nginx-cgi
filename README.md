@@ -216,7 +216,7 @@ outputs the separator. Both header section and body section can be empty, but
 the separator is mandatory. Missing of separator will causes an 500 error.
 
 All lines in header section will be parsed as normal http response header line.
-And then passed to the client side. There's one sepcial header `Status`, it will
+And then passed to the client side. There's one special header `Status`, it will
 be passed in response status line. If `cgi_strict` is on, nginx-cgi will check
 all cgi output headers, and 500 error will be responsed if invalid header found.
 Otherwise, invalid headers will be forwarded to client side too. It's fully
@@ -333,7 +333,7 @@ Default: on
 
 Set interpreter and interpreter args for cgi script.
 
-When this option is not empty, cgi script will be run be giving interpreter.
+When this option is not empty, cgi script will be run with giving interpreter.
 Otherwise, script will be executed directly.
 
 Default: empty
@@ -379,14 +379,14 @@ Enable or disable reverse dns.
 
 off: disable rdns feature.
 
-on: Run reverse dns before launching cgi script, and pass rdns to cgi script via
-    `REMOTE_HOST` environment variable.
+on: Do reverse dns before launching cgi script, and pass rdns result to cgi
+    script via `REMOTE_HOST` environment variable.
 
-double: After reverse dns, do a forward dns again to check the rdns result. it
+double: After reverse dns, do a forward dns again to check the rdns result. if
         result matches, pass result as `REMOTE_HOST`.
 
 required: If rdns failed, 403, 503 or 500 returns to the client. Depends on the
-          failure reason of rdns
+          failure reason of rdns.
 
 If you turns on this option, you need to setup a `resolver` in nginx too.
 Otherwise you will get an error of `no resolver defined to resolve`.
@@ -409,7 +409,7 @@ If cgi script is behind an authorization module (such as
 set to auth type (such as `Basic`) and authorized user.
 
 If no authorization module enabled, no matter client passes autoriazation header
-or not. Those 2 fields are empty.
+or not. Those 2 fields are not present.
 
 `Authorization` header is not visible in cgi script for security reason.
 
@@ -450,7 +450,7 @@ Let's say if you have a script under `/cgi-bin/hello.sh`, and you access
 `http://127.0.0.1/cgi-bin/hello.sh/somewhat`.
 
 The standard says, the server should try again with `http://127.0.0.1/somewhat`,
-and found out whether the uri should mapped to.
+and found out where the uri should mapped to.
 
 For technical reason, I just construct this variable by document root and
 `PATH_INFO`.
@@ -539,7 +539,7 @@ Client port number.
 
 * `REQUEST_SCHEME` (non-standard, impled by apache2)
 
-`htttp` or `htttps`.
+`http` or `https`.
 
 * `REQUEST_URI` (non-standard, impled by apache2)
 
@@ -576,7 +576,7 @@ CGI is really good for system management. So it's inevitable to do something
 with root or other user's permission.
 
 Apache has a special mod `mod_suexec` for this purpose. It can launch cgi
-scripts with other user and group. It uses a sepcial `suexec` binary to archive
+scripts with other user and group. It uses a special `suexec` binary to archive
 this.
 
 But nowadays, `sudo` is really popular, and it almost pre-installed in other
