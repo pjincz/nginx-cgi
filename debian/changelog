@@ -1,14 +1,20 @@
+nginx-cgi (0.6) unstable; urgency=medium
+
+  * Added support for FreeBSD
+
+ -- Chizhong Jin <pjincz@gmail.com>  Thu, 23 Jan 2025 04:41:00 +0800
+
 nginx-cgi (0.5) unstable; urgency=medium
 
   * Add `required` flag to `cgi_rdns`, allow user to enforce rdns
 
- -- Chizhong Jin <pjincz@gmail.com>  Sat, 19 Jan 2025 20:03:00 +0800
+ -- Chizhong Jin <pjincz@gmail.com>  Sun, 19 Jan 2025 20:03:00 +0800
 
 nginx-cgi (0.4) unstable; urgency=medium
 
   * Fixed: stack overflow when works with ssl
 
- -- Chizhong Jin <pjincz@gmail.com>  Sat, 19 Jan 2025 19:18:00 +0800
+ -- Chizhong Jin <pjincz@gmail.com>  Sun, 19 Jan 2025 19:18:00 +0800
 
 nginx-cgi (0.3) unstable; urgency=medium
 
