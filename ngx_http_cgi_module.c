@@ -38,6 +38,10 @@ static const char *_ngx_http_cgi_hopbyhop_hdrs[] = {
 };
 
 
+static struct sigaction * _gs_ngx_cgi_orig_sigchld_sa = NULL;
+static struct ngx_http_cgi_process_s * _gs_http_cgi_processes = NULL;
+
+
 #define _strieq(str, exp) \
     (ngx_strncasecmp((str).data, (u_char*)(exp), (str).len) == 0)
 #define _ngx_str_last_ch(nstr) \
@@ -88,7 +92,14 @@ typedef struct {
 } ngx_http_cgi_header_scan_t;
 
 
-typedef struct {
+typedef struct ngx_http_cgi_process_s {
+    pid_t                          pid;
+
+    struct ngx_http_cgi_process_s *next;
+} ngx_http_cgi_process_t;
+
+
+typedef struct ngx_http_cgi_ctx_s {
     ngx_http_request_t            *r;
     ngx_http_core_loc_conf_t      *clcf;
     ngx_http_cgi_loc_conf_t       *conf;
@@ -123,18 +134,7 @@ typedef struct {
 } ngx_http_cgi_ctx_t;
 
 
-typedef struct {
-    ngx_http_cgi_ctx_t *ctx;
-    char               *child_stack;
-    char               *grandchild_stack;
-
-    pid_t               grandchild_pid;
-
-    const char         *descendant_error;
-    ngx_int_t           descendant_errno;
-} ngx_http_cgi_spawn_shared_ctx_t;
-
-
+static ngx_int_t ngx_http_cgi_init_process(ngx_cycle_t *cycle);
 static ngx_int_t ngx_http_cgi_handler_1(ngx_http_request_t *r);
 static void *ngx_http_cgi_create_loc_conf(ngx_conf_t *cf);
 static char *ngx_http_cgi_merge_loc_conf(
@@ -297,7 +297,7 @@ ngx_module_t  ngx_http_cgi_module = {
     NGX_HTTP_MODULE,                       /* module type */
     NULL,                                  /* init master */
     NULL,                                  /* init module */
-    NULL,                                  /* init process */
+    ngx_http_cgi_init_process,             /* init process */
     NULL,                                  /* init thread */
     NULL,                                  /* exit thread */
     NULL,                                  /* exit process */
@@ -307,8 +307,73 @@ ngx_module_t  ngx_http_cgi_module = {
 
 
 static void
+ngx_http_cgi_sigchld_handler(int sid, siginfo_t *sinfo, void *ucontext) {
+    ngx_http_cgi_process_t *prev = NULL;
+    ngx_http_cgi_process_t *cur = _gs_http_cgi_processes;
+    int                          wstatus;
+
+    for (; cur != NULL; prev = cur, cur = prev->next) {
+        if (cur->pid == sinfo->si_pid) {
+            break;
+        }
+    }
+
+    if (cur) {
+        pid_t pid = waitpid(cur->pid, &wstatus, WNOHANG);
+        if (pid > 0) {
+            // process finished
+            if (prev) {
+                prev->next = cur->next;
+            } else {
+                _gs_http_cgi_processes = cur->next;
+            }
+            ngx_log_error(NGX_LOG_INFO, ngx_cycle->log, 0,
+                "cgi process %d quit with status %d",
+                cur->pid, WEXITSTATUS(wstatus));
+            free(cur);
+        }
+    } else {
+        // forward signal to orig handler
+        if (_gs_ngx_cgi_orig_sigchld_sa->sa_flags & SA_SIGINFO) {
+            _gs_ngx_cgi_orig_sigchld_sa->sa_sigaction(sid, sinfo, ucontext);
+        } else if (_gs_ngx_cgi_orig_sigchld_sa->sa_handler != SIG_DFL &&
+                   _gs_ngx_cgi_orig_sigchld_sa->sa_handler != SIG_IGN)
+        {
+            _gs_ngx_cgi_orig_sigchld_sa->sa_handler(sid);
+        }
+    }
+}
+
+
+static ngx_int_t
+ngx_http_cgi_init_process(ngx_cycle_t *cycle) {
+    if (_gs_ngx_cgi_orig_sigchld_sa) {
+        return NGX_OK;
+    }
+
+    ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+            "http cgi: install SIGCHLD handler");
+
+    _gs_ngx_cgi_orig_sigchld_sa = malloc(sizeof(struct sigaction));
+    if (!_gs_ngx_cgi_orig_sigchld_sa) {
+        return NGX_ERROR;
+    }
+    ngx_memzero(_gs_ngx_cgi_orig_sigchld_sa, sizeof(struct sigaction));
+
+    struct sigaction newact = {0};
+    newact.sa_flags = SA_SIGINFO;
+    newact.sa_sigaction = ngx_http_cgi_sigchld_handler;
+    sigemptyset(&newact.sa_mask);
+    sigaction(SIGCHLD, &newact, _gs_ngx_cgi_orig_sigchld_sa);
+
+    return NGX_OK;
+}
+
+
+static void
 ngx_http_cgi_ctx_cleanup(void *data) {
     ngx_http_cgi_ctx_t *ctx = data;
+
     if (ctx->pipe_stdin[0] != -1) {
         close(ctx->pipe_stdin[0]);
     }
@@ -362,29 +427,10 @@ ngx_http_cgi_ctx_create(ngx_pool_t *pool) {
 }
 
 
-static int ngx_http_cgi_grandchild_proc(void *arg) {
-    ngx_http_cgi_spawn_shared_ctx_t *spawn_ctx = arg;
-    ngx_http_cgi_ctx_t *ctx = spawn_ctx->ctx;
+static int
+ngx_http_cgi_child_proc(ngx_http_cgi_ctx_t *ctx) {
     char **cmd = ctx->cmd->elts;
     char **env = ctx->env->elts;
-
-    // Do not use `p` version here, to avoid security issue
-    if (execve(cmd[0], cmd, env) == -1) {
-        spawn_ctx->descendant_error = "execve";
-        spawn_ctx->descendant_errno = errno;
-        _exit(0);
-    }
-
-    // never reaches here, just for elimating compiler warning
-    return 0;
-}
-
-
-static int ngx_http_cgi_child_proc(void *arg) {
-    ngx_http_cgi_spawn_shared_ctx_t *spawn_ctx = arg;
-    ngx_http_cgi_ctx_t *ctx = spawn_ctx->ctx;
-    int wstatus = 0;
-    int rc = 0;
 
     close(0);
     close(1);
@@ -409,33 +455,12 @@ static int ngx_http_cgi_child_proc(void *arg) {
     // of connections it closed by nginx, and causes client hangs.
     closefrom(3);
 
-    // fork again to detch
-    // again we cannot use fork/vfork here. The forked child process still
-    // has signal handler for SIGCHLD
-    spawn_ctx->grandchild_pid = clone(ngx_http_cgi_grandchild_proc,
-            spawn_ctx->grandchild_stack + STACK_SIZE,
-            CLONE_VM | CLONE_VFORK, spawn_ctx);
-
-    if (spawn_ctx->grandchild_pid == -1) {
-        spawn_ctx->descendant_error = "clone";
-        spawn_ctx->descendant_errno = errno;
-        _exit(0);
+    // Do not use `p` version here, to avoid security issue
+    if (execve(cmd[0], cmd, env) == -1) {
+        // 126 means cannot executing binary in POSIX system.
+        return 126;
     }
-
-    // clone returns after _exit or exec, if it failed, we can get the error
-    // immediently.
-    //  __WCLONE is required to wait cloned process
-    rc = waitpid(spawn_ctx->grandchild_pid, &wstatus, WNOHANG | __WCLONE);
-    if (rc > 0) {
-        // grandchild exec failed, forward exit code
-        _exit(WEXITSTATUS(wstatus));
-    } else if (rc == 0) {
-        // grandchild is running, that's good!
-        _exit(0);
-    } else {
-        // error happens on waitpid, that's not important, just quit
-        _exit(0);
-    }
+    return 0;
 }
 
 
@@ -971,11 +996,10 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
 
 static ngx_int_t
 ngx_http_cgi_spawn_child_process(ngx_http_cgi_ctx_t *ctx) {
-    ngx_http_cgi_spawn_shared_ctx_t *spawn_ctx = 0;
     pid_t                            child_pid = 0;
-    int                              wstatus = 0;
     ngx_int_t                        rc = NGX_OK;
     ngx_http_request_t              *r = ctx->r;
+    ngx_http_cgi_process_t          *pinfo = NULL;
 
     // don't create stdin pipe if there's no body to save connections
     if ((r->request_body && r->request_body->bufs) || r->reading_body) {
@@ -1001,47 +1025,48 @@ ngx_http_cgi_spawn_child_process(ngx_http_cgi_ctx_t *ctx) {
         }
     }
 
-    spawn_ctx = mmap(NULL, sizeof(*spawn_ctx),
-            PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-    if (!spawn_ctx) {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno, "mmap");
-        rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-        goto cleanup;
-    }
-    ngx_memzero(spawn_ctx, sizeof(*spawn_ctx));
-
-    spawn_ctx->ctx = ctx;
-    spawn_ctx->child_stack = ngx_palloc(r->pool, STACK_SIZE);
-    spawn_ctx->grandchild_stack = ngx_palloc(r->pool, STACK_SIZE);
-    if (!spawn_ctx->child_stack || !spawn_ctx->grandchild_stack) {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno, "ngx_palloc");
-        rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-        goto cleanup;
-    }
-
-    // use clone instead of fork/vfork to avoid SIGCHLD be sent to nginx here
-    child_pid = clone(ngx_http_cgi_child_proc,
-            spawn_ctx->child_stack + STACK_SIZE,
-            CLONE_VM | CLONE_VFORK, spawn_ctx);
-    if (child_pid == -1) {
+    // prepare pinfo before vfork
+    pinfo = malloc(sizeof(*pinfo));
+    if (!pinfo) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
-                      "run cgi \"%V\" failed", &ctx->script);
+                      "malloc failed");
         rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
         goto cleanup;
     }
-    if (spawn_ctx->descendant_error) {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log,
-                      spawn_ctx->descendant_errno, spawn_ctx->descendant_error);
-        rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-        goto cleanup;
+    ngx_memzero(pinfo, sizeof(*pinfo));
+
+    // core flow
+    {
+        sigset_t                         old_ss, new_ss;
+
+        // disable SIGCHLD during spawning
+        sigemptyset(&new_ss);
+        sigaddset(&new_ss, SIGCHLD);
+        sigprocmask(SIG_BLOCK, &new_ss, &old_ss);
+
+        child_pid = vfork();
+        if (child_pid == -1) {
+            sigprocmask(SIG_SETMASK, &old_ss, NULL);
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
+                        "vfork failed");
+            rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+            goto cleanup;
+        } else if (child_pid == 0) {
+            // child process
+            _exit(ngx_http_cgi_child_proc(ctx));
+        } else {
+            // insert new pid to the chain
+            pinfo->pid = child_pid;
+            pinfo->next = _gs_http_cgi_processes;
+            _gs_http_cgi_processes = pinfo;
+            pinfo = NULL;
+
+            ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+                    "spawned cgi process: %d", child_pid);
+
+            sigprocmask(SIG_SETMASK, &old_ss, NULL);
+        }
     }
-
-    ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
-            "cgi process: %d", spawn_ctx->grandchild_pid);
-
-    // child process will exit immediately after forking grandchild
-    //  __WCLONE is required to wait cloned process
-    waitpid(child_pid, &wstatus, WNOHANG | __WCLONE);
 
     if (ctx->pipe_stdin[PIPE_READ_END] != -1) {
         close(ctx->pipe_stdin[PIPE_READ_END]);
@@ -1057,14 +1082,8 @@ ngx_http_cgi_spawn_child_process(ngx_http_cgi_ctx_t *ctx) {
     }
 
 cleanup:
-    if (spawn_ctx) {
-        if (spawn_ctx->child_stack) {
-            ngx_pfree(r->pool, spawn_ctx->child_stack);
-        }
-        if (spawn_ctx->grandchild_stack) {
-            ngx_pfree(r->pool, spawn_ctx->grandchild_stack);
-        }
-        munmap(spawn_ctx, sizeof(*spawn_ctx));
+    if (pinfo) {
+        free(pinfo);
     }
     return rc;
 }
