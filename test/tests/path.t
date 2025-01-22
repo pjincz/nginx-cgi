@@ -45,6 +45,6 @@ EOF
 
 $t->run();
 
-like(http_get('/cgi-bin/env.sh'), qr/PATH="\/usr\/bin:\/bin"/m, 'test path');
+like(http_get('/cgi-bin/env.sh'), qr/PATH=\/usr\/bin:\/bin/m, 'test path');
 
 $t->stop();

@@ -1,6 +1,6 @@
-#!/bin/bash
+#!/bin/sh
 
 echo "Content-Type: text/plain"
 echo
 
-export | sed 's/declare -x //'
+printenv

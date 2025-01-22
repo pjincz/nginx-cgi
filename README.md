@@ -2,6 +2,18 @@
 
 Brings CGI support to Nginx.
 
++---------+----------------------------------------+
+| OS      | Status                                 |
++---------+----------------------------------------+
+| Windows | WIP...                                 |
++---------+----------------------------------------+
+| Linux   | Tested with Ubuntu 24.04 and Debian 12 |
++---------+----------------------------------------+
+| BSD     | Tested with FreeBSD 14.2               |
++---------+----------------------------------------+
+| Mac OS  | WIP...                                 |
++---------+----------------------------------------+
+
 ## Before everything
 
 CGI is neither a demon nor an angel. It is simply a tool. Just like a chef's

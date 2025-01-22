@@ -73,59 +73,59 @@ like(http_get('/../cgi-bin/hello.sh'), qr/\b400\b/m, 'hello');
 # environment var tests
 
 # rfc3875 vars
-like(http_get('/cgi-bin/env.sh'), qr/^GATEWAY_INTERFACE="CGI\/1.1"$/m, 'GATEWAY_INTERFACE');
-like(http_get('/cgi-bin/env.sh/aaa'), qr/^PATH_INFO="\/aaa"$/m, 'PATH_INFO');
-like(http_get('/cgi-bin/env.sh/aaa'), qr/^PATH_TRANSLATED="$ENV{TEST_ROOT_DIR}\/aaa"$/m, 'PATH_TRANSLATED');
-like(http_get('/cgi-bin/env.sh?a=1&b=2'), qr/^QUERY_STRING="a=1&b=2"$/m, 'QUERY_STRING');
-like(http_get('/cgi-bin/env.sh'), qr/^REMOTE_ADDR="127.0.0.1"$/m, 'REMOTE_ADDR');
+like(http_get('/cgi-bin/env.sh'), qr/^GATEWAY_INTERFACE=CGI\/1.1$/m, 'GATEWAY_INTERFACE');
+like(http_get('/cgi-bin/env.sh/aaa'), qr/^PATH_INFO=\/aaa$/m, 'PATH_INFO');
+like(http_get('/cgi-bin/env.sh/aaa'), qr/^PATH_TRANSLATED=$ENV{TEST_ROOT_DIR}\/aaa$/m, 'PATH_TRANSLATED');
+like(http_get('/cgi-bin/env.sh?a=1&b=2'), qr/^QUERY_STRING=a=1&b=2$/m, 'QUERY_STRING');
+like(http_get('/cgi-bin/env.sh'), qr/^REMOTE_ADDR=127.0.0.1$/m, 'REMOTE_ADDR');
 # TODO: REMOTE_HOST
-like(http_get('/cgi-bin/env.sh'), qr/^REQUEST_METHOD="GET"$/m, 'REQUEST_METHOD');
-like(http_get('/cgi-bin/env.sh/asdf'), qr/^SCRIPT_NAME="\/cgi-bin\/env.sh"$/m, 'SCRIPT_NAME');
-like(http_get('/cgi-bin/env.sh'), qr/^SERVER_PORT="8080"$/m, 'SERVER_PORT');
-like(http_get('/cgi-bin/env.sh'), qr/^SERVER_SOFTWARE="nginx\/.*"$/m, 'SERVER_SOFTWARE');
+like(http_get('/cgi-bin/env.sh'), qr/^REQUEST_METHOD=GET$/m, 'REQUEST_METHOD');
+like(http_get('/cgi-bin/env.sh/asdf'), qr/^SCRIPT_NAME=\/cgi-bin\/env.sh$/m, 'SCRIPT_NAME');
+like(http_get('/cgi-bin/env.sh'), qr/^SERVER_PORT=8080$/m, 'SERVER_PORT');
+like(http_get('/cgi-bin/env.sh'), qr/^SERVER_SOFTWARE=nginx\/.*$/m, 'SERVER_SOFTWARE');
 
 # SERVER_NAME
-like(http(<<EOF), qr/^SERVER_NAME="localhost"$/m, 'SERVER_NAME localhost');
+like(http(<<EOF), qr/^SERVER_NAME=localhost$/m, 'SERVER_NAME localhost');
 GET /cgi-bin/env.sh HTTP/1.0
 Host: localhost
 
 EOF
-like(http(<<EOF), qr/^SERVER_NAME="localhost"$/m, 'SERVER_NAME localhost:8000');
+like(http(<<EOF), qr/^SERVER_NAME=localhost$/m, 'SERVER_NAME localhost:8000');
 GET /cgi-bin/env.sh HTTP/1.0
 Host: localhost:8000
 
 EOF
-like(http(<<EOF), qr/^SERVER_NAME="fake.com"$/m, 'SERVER_NAME fake.com');
+like(http(<<EOF), qr/^SERVER_NAME=fake.com$/m, 'SERVER_NAME fake.com');
 GET /cgi-bin/env.sh HTTP/1.0
 Host: fake.com
 
 EOF
-like(http(<<EOF), qr/^SERVER_NAME="fake.com"$/m, 'SERVER_NAME fake.com:8000');
+like(http(<<EOF), qr/^SERVER_NAME=fake.com$/m, 'SERVER_NAME fake.com:8000');
 GET /cgi-bin/env.sh HTTP/1.0
 Host: fake.com:8000
 
 EOF
-like(http(<<EOF), qr/^SERVER_NAME="127.0.0.1"$/m, 'SERVER_NAME 127.0.0.1');
+like(http(<<EOF), qr/^SERVER_NAME=127.0.0.1$/m, 'SERVER_NAME 127.0.0.1');
 GET /cgi-bin/env.sh HTTP/1.0
 Host: 127.0.0.1
 
 EOF
-like(http(<<EOF), qr/^SERVER_NAME="127.0.0.1"$/m, 'SERVER_NAME 127.0.0.1:8000');
+like(http(<<EOF), qr/^SERVER_NAME=127.0.0.1$/m, 'SERVER_NAME 127.0.0.1:8000');
 GET /cgi-bin/env.sh HTTP/1.0
 Host: 127.0.0.1:8000
 
 EOF
-like(http(<<EOF), qr/^SERVER_NAME="\[::1\]"$/m, 'SERVER_NAME [::1]');
+like(http(<<EOF), qr/^SERVER_NAME=\[::1\]$/m, 'SERVER_NAME [::1]');
 GET /cgi-bin/env.sh HTTP/1.0
 Host: [::1]
 
 EOF
-like(http(<<EOF), qr/^SERVER_NAME="\[::1\]"$/m, 'SERVER_NAME [::1]:8000');
+like(http(<<EOF), qr/^SERVER_NAME=\[::1\]$/m, 'SERVER_NAME [::1]:8000');
 GET /cgi-bin/env.sh HTTP/1.0
 Host: [::1]:8000
 
 EOF
-like(http(<<EOF), qr/^SERVER_NAME="127.0.0.1"$/m, 'SERVER_NAME no host');
+like(http(<<EOF), qr/^SERVER_NAME=127.0.0.1$/m, 'SERVER_NAME no host');
 GET /cgi-bin/env.sh HTTP/1.0
 
 EOF
@@ -142,16 +142,16 @@ Content-Type: text/plain
 
 a magic string
 EOF
-like($r, qr/^CONTENT_LENGTH="14"$/m, 'CONTENT_LENGTH');
-like($r, qr/^CONTENT_TYPE="text\/plain"$/m, 'CONTENT_TYPE');
+like($r, qr/^CONTENT_LENGTH=14$/m, 'CONTENT_LENGTH');
+like($r, qr/^CONTENT_TYPE=text\/plain$/m, 'CONTENT_TYPE');
 
 # SERVER_PROTOCOL
-like(http(<<EOF), qr/^SERVER_PROTOCOL="HTTP\/1.0"$/m, 'SERVER_PROTOCOL 1.0');
+like(http(<<EOF), qr/^SERVER_PROTOCOL=HTTP\/1.0$/m, 'SERVER_PROTOCOL 1.0');
 GET /cgi-bin/env.sh HTTP/1.0
 Host: localhost
 
 EOF
-like(http(<<EOF), qr/^SERVER_PROTOCOL="HTTP\/1.1"$/m, 'SERVER_PROTOCOL 1.1');
+like(http(<<EOF), qr/^SERVER_PROTOCOL=HTTP\/1.1$/m, 'SERVER_PROTOCOL 1.1');
 GET /cgi-bin/env.sh HTTP/1.1
 Host: localhost
 Connection: close
@@ -173,13 +173,13 @@ unlike($r, qr/AUTH_TYPE/m, 'no AUTH_TYPE');
 #   REMOTE_IDENT: no plan to support, due to security reason
 
 # HTTP_ vars
-like(http(<<EOF), qr/^HTTP_ACCEPT="\*\/\*"$/m, 'HTTP_ACCEPT');
+like(http(<<EOF), qr/^HTTP_ACCEPT=\*\/\*$/m, 'HTTP_ACCEPT');
 GET /cgi-bin/env.sh HTTP/1.0
 Host: localhost
 Accept: */*
 
 EOF
-like(http(<<EOF), qr/^HTTP_AAA="123"$/m, 'HTTP_AAA');
+like(http(<<EOF), qr/^HTTP_AAA=123$/m, 'HTTP_AAA');
 GET /cgi-bin/env.sh HTTP/1.0
 Host: localhost
 Aaa: 123
@@ -194,12 +194,12 @@ Authorization: Basic dXNlcjpwYXNz
 EOF
 
 # vars from apache2
-like(http_get('/cgi-bin/env.sh'), qr/^DOCUMENT_ROOT="$ENV{TEST_ROOT_DIR}"$/m, 'DOCUMENT_ROOT');
-like(http_get('/cgi-bin/env.sh'), qr/^REMOTE_PORT=".*"$/m, 'REMOTE_PORT');
-like(http_get('/cgi-bin/env.sh'), qr/^REQUEST_SCHEME="http"$/m, 'REQUEST_SCHEME');
-like(http_get('/cgi-bin/env.sh'), qr/^REQUEST_URI="\/cgi-bin\/env.sh"$/m, 'REQUEST_URI');
-like(http_get('/cgi-bin/env.sh'), qr/^SCRIPT_FILENAME="$ENV{TEST_ROOT_DIR}\/cgi-bin\/env.sh"$/m, 'SCRIPT_FILENAME');
-like(http_get('/cgi-bin/env.sh'), qr/^SERVER_ADDR="127.0.0.1"$/m, 'SERVER_ADDR');
+like(http_get('/cgi-bin/env.sh'), qr/^DOCUMENT_ROOT=$ENV{TEST_ROOT_DIR}$/m, 'DOCUMENT_ROOT');
+like(http_get('/cgi-bin/env.sh'), qr/^REMOTE_PORT=.*$/m, 'REMOTE_PORT');
+like(http_get('/cgi-bin/env.sh'), qr/^REQUEST_SCHEME=http$/m, 'REQUEST_SCHEME');
+like(http_get('/cgi-bin/env.sh'), qr/^REQUEST_URI=\/cgi-bin\/env.sh$/m, 'REQUEST_URI');
+like(http_get('/cgi-bin/env.sh'), qr/^SCRIPT_FILENAME=$ENV{TEST_ROOT_DIR}\/cgi-bin\/env.sh$/m, 'SCRIPT_FILENAME');
+like(http_get('/cgi-bin/env.sh'), qr/^SERVER_ADDR=127.0.0.1$/m, 'SERVER_ADDR');
 
 ###############################################################################
 # misc tests

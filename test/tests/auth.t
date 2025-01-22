@@ -60,8 +60,8 @@ Host: localhost
 Authorization: Basic YWFhOmJiYg==
 
 EOF
-like($r, qr/REMOTE_USER="aaa"/m, 'REMOTE_USER');
-like($r, qr/AUTH_TYPE="Basic"/m, 'AUTH_TYPE');
+like($r, qr/REMOTE_USER=aaa/m, 'REMOTE_USER');
+like($r, qr/AUTH_TYPE=Basic/m, 'AUTH_TYPE');
 
 
 # bad password

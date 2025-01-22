@@ -9,3 +9,6 @@
 /debian/.debhelper/
 /debian/debhelper-build-stamp
 /debian/libnginx-mod-http-cgi/
+
+# vim
+*.swp

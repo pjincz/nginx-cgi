@@ -105,7 +105,7 @@ http {
         location /cgi-bin {
             cgi on;
             cgi_x_only on;
-            cgi_interpreter /usr/bin/bash;
+            cgi_interpreter /bin/sh;
         }
     }
 }
@@ -140,7 +140,7 @@ http {
         location /cgi-bin {
             cgi on;
             cgi_x_only off;
-            cgi_interpreter /usr/bin/bash;
+            cgi_interpreter /bin/sh;
         }
     }
 }
