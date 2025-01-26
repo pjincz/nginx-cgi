@@ -1007,21 +1007,21 @@ ngx_http_cgi_spawn_child_process(ngx_http_cgi_ctx_t *ctx) {
             ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
                     "pipe");
             rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-            goto cleanup;
+            goto error;
         }
     }
 
     if (pipe(ctx->pipe_stdout) == -1) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno, "pipe");
         rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-        goto cleanup;
+        goto error;
     }
 
     if (ctx->conf->cgi_stderr == CGI_STDERR_PIPE) {
         if (pipe(ctx->pipe_stderr) == -1) {
             ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno, "pipe");
             rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-            goto cleanup;
+            goto error;
         }
     }
 
@@ -1031,7 +1031,7 @@ ngx_http_cgi_spawn_child_process(ngx_http_cgi_ctx_t *ctx) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
                       "malloc failed");
         rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-        goto cleanup;
+        goto error;
     }
     ngx_memzero(pinfo, sizeof(*pinfo));
 
@@ -1050,7 +1050,8 @@ ngx_http_cgi_spawn_child_process(ngx_http_cgi_ctx_t *ctx) {
             ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
                         "vfork failed");
             rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-            goto cleanup;
+            free(pinfo);
+            goto error;
         } else if (child_pid == 0) {
             // child process
             _exit(ngx_http_cgi_child_proc(ctx));
@@ -1059,7 +1060,6 @@ ngx_http_cgi_spawn_child_process(ngx_http_cgi_ctx_t *ctx) {
             pinfo->pid = child_pid;
             pinfo->next = _gs_http_cgi_processes;
             _gs_http_cgi_processes = pinfo;
-            pinfo = NULL;
 
             ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
                     "spawned cgi process: %d", child_pid);
@@ -1081,10 +1081,7 @@ ngx_http_cgi_spawn_child_process(ngx_http_cgi_ctx_t *ctx) {
         ctx->pipe_stderr[PIPE_WRITE_END] = -1;
     }
 
-cleanup:
-    if (pinfo) {
-        free(pinfo);
-    }
+error:
     return rc;
 }
 
