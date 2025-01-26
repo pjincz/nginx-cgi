@@ -1,3 +1,10 @@
+nginx-cgi (0.7) unstable; urgency=medium
+
+  * Fixed: compiling error with gcc 11.4
+  * Fixed: X- headers cannot be forwarded to CGI script correctly
+
+ -- Chizhong Jin <pjincz@gmail.com>  Mon, 27 Jan 2025 02:57:46 +0800
+
 nginx-cgi (0.6) unstable; urgency=medium
 
   * Added support for FreeBSD
