@@ -901,7 +901,7 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
 
         if (ctx->r->headers_in.authorization) {
             ngx_str_t auth_type = ctx->r->headers_in.authorization->value;
-            for (size_t i = 0; i < auth_type.len; ++i) {
+            for (i = 0; i < auth_type.len; ++i) {
                 if (auth_type.data[i] == ' ') {
                     auth_type.len = i;
                     break;
@@ -954,10 +954,10 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
             name[v[i].key.len] = 0;
 
             // replace `-` with `_`, and convert to uppercase
-            for (size_t i = 0; i < v[i].key.len; ++i) {
-                name[i] = ngx_toupper(name[i]);
-                if (name[i] == '-') {
-                    name[i] = '_';
+            for (u_char *p = name; *p; ++p) {
+                *p = ngx_toupper(*p);
+                if (*p == '-') {
+                    *p = '_';
                 }
             }
 

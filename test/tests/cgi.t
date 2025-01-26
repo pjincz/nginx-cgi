@@ -13,7 +13,7 @@ use Test::Nginx;
 select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
-my $t = Test::Nginx->new()->plan(46);
+my $t = Test::Nginx->new()->plan(47);
 ok($t->has_module('cgi'), 'has cgi module');
 
 ###############################################################################
@@ -185,6 +185,15 @@ Host: localhost
 Aaa: 123
 
 EOF
+
+# X_ vars
+like(http(<<EOF), qr/^X_FORWARDED_HOST=some-cases-sink.loca.lt$/m, 'X_FORWARDED_HOST');
+GET /cgi-bin/env.sh HTTP/1.0
+Host: localhost
+X-Forwarded-Host: some-cases-sink.loca.lt
+
+EOF
+
 # security test: Authorization should not be exposed as environment
 unlike(http(<<EOF), qr/HTTP_AUTHORIZATION/m, 'no HTTP_AUTHORIZATION');
 GET /cgi-bin/env.sh HTTP/1.0
