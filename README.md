@@ -7,7 +7,7 @@ Brings CGI support to Nginx.
 | Windows | WIP...                                 |
 | Linux   | Tested with Ubuntu 24.04 and Debian 12 |
 | BSD     | Tested with FreeBSD 14.2               |
-| Mac OS  | WIP...                                 |
+| Mac OS  | Tested with MacOS 15.1                 |
 
 ## Before everything
 

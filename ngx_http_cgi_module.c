@@ -10,7 +10,9 @@
 #include <assert.h>
 
 
-#define STACK_SIZE         (1024 * 16)
+// Non-used stack will not mapped to real memory in most of modem OS
+// Allow a bigger one, to prevent run out of stack.
+#define STACK_SIZE         (1024 * 64)
 
 #define PIPE_READ_END      0
 #define PIPE_WRITE_END     1
@@ -425,6 +427,28 @@ ngx_http_cgi_ctx_create(ngx_pool_t *pool) {
 
     return ctx;
 }
+
+
+// Polyfill: Mac OS doesn't have `closefrom`
+#if (NGX_DARWIN)
+static void closefrom(int lowfd) {
+    DIR *dir = opendir("/dev/fd");
+    if (!dir) {
+        perror("opendir /dev/fd failed");
+        return;
+    }
+
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        int fd = atoi(entry->d_name);
+        if (fd >= lowfd && fd != dirfd(dir)) {
+            close(fd);
+        }
+    }
+
+    closedir(dir);
+}
+#endif
 
 
 static int
