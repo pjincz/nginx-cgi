@@ -12,3 +12,6 @@
 
 # vim
 *.swp
+
+# nginx runtime tmp file
+/test/logs
