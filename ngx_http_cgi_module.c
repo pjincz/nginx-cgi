@@ -1678,7 +1678,7 @@ ngx_http_cgi_flush(ngx_http_cgi_ctx_t *ctx, ngx_flag_t eof) {
 
 
 static void
-ngx_http_cgi_stdin_data_handler(ngx_event_t *ev) {
+ngx_http_cgi_stdin_handler(ngx_event_t *ev) {
     ngx_connection_t   *c = ev->data;
     ngx_http_cgi_ctx_t *ctx = c->data;
     ngx_http_request_t *r = ctx->r;
@@ -1736,6 +1736,7 @@ ngx_http_cgi_stdin_data_handler(ngx_event_t *ev) {
 
     if (ctx->c_stdin && r->request_body->bufs) {
         // still more data need to be wrote
+        ctx->c_stdin->write->ready = 0;
         ngx_handle_write_event(ctx->c_stdin->write, 0);
     }
 }
@@ -1763,7 +1764,7 @@ ngx_http_cgi_request_body_handler(ngx_http_request_t *r) {
 
     if (ctx->c_stdin) {
         if (ctx->c_stdin->write->ready) {
-            ngx_http_cgi_stdin_data_handler(ctx->c_stdin->write);
+            ngx_http_cgi_stdin_handler(ctx->c_stdin->write);
         }
     } else {
         // cgi script has closed the stdin, discard remain data
@@ -1787,14 +1788,14 @@ error:
 
 
 static void
-ngx_http_cgi_stdout_data_handler(ngx_event_t *ev) {
+ngx_http_cgi_stdout_handler(ngx_event_t *ev) {
     ngx_connection_t   *c = ev->data;
     ngx_http_cgi_ctx_t *ctx = c->data;
     ngx_http_request_t *r = ctx->r;
     ngx_int_t           rc = NGX_OK;
 
     u_char buf[65536];
-    int nread;
+    int total_read = 0, nread = 0;
 
     for (;;) {
         nread = read(c->fd, buf, sizeof(buf));
@@ -1803,30 +1804,43 @@ ngx_http_cgi_stdout_data_handler(ngx_event_t *ev) {
             if (rc != NGX_OK) {
                 goto error;
             }
+            total_read += nread;
         } else if (nread == 0) {
-            // end of file
-            ngx_close_connection(ctx->c_stdout);
-            ctx->c_stdout = NULL;
-            ngx_http_finalize_request(r, ngx_http_cgi_flush(ctx, 1));
-            return;
+            // different system has different behaviour here, do nothing
+            break;
         } else {
             if (ngx_errno == EAGAIN) {
-                // wait for more data
-                rc = ngx_http_cgi_flush(ctx, 0);
-                if (rc != NGX_OK) {
-                    goto error;
-                }
-                rc = ngx_handle_read_event(ctx->c_stdout->read, 0);
-                if (rc == NGX_ERROR || rc > NGX_OK) {
-                    goto error;
-                }
-                return;
+                // wait for more data, also do nothing here
+                break;
             } else {
                 rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
                 goto error;
             }
         }
     }
+
+    if (total_read > 0) {
+        // We have got some data from pipe, we are not sure whether pipe whether
+        // eof or not here, let's trigger ngx_handle_read_event again here.
+        // If pipe eof, ngx_http_cgi_stdout_handler will be triggered again.
+        rc = ngx_http_cgi_flush(ctx, 0);
+        if (rc != NGX_OK) {
+            goto error;
+        }
+        ctx->c_stdout->read->ready = 0;
+        rc = ngx_handle_read_event(ctx->c_stdout->read, 0);
+        if (rc == NGX_ERROR || rc > NGX_OK) {
+            goto error;
+        }
+    } else {
+        // nginx handles POLLIN and POLLHUP in the same handler, if no data read
+        // during handling, it means eof
+        ngx_close_connection(ctx->c_stdout);
+        ctx->c_stdout = NULL;
+        ngx_http_finalize_request(r, ngx_http_cgi_flush(ctx, 1));
+    }
+
+    return;
 
 error:
     ngx_http_finalize_request(r, rc);
@@ -1835,33 +1849,41 @@ error:
 
 
 static void
-ngx_http_cgi_stderr_data_handler(ngx_event_t *ev) {
+ngx_http_cgi_stderr_handler(ngx_event_t *ev) {
     ngx_connection_t   *c = ev->data;
     ngx_http_cgi_ctx_t *ctx = c->data;
     ngx_http_request_t *r = ctx->r;
 
     u_char buf[65536];
-    int nread;
+    int total_read = 0, nread = 0;
 
     for (;;) {
         nread = read(c->fd, buf, sizeof(buf));
         if (nread > 0) {
             ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
                     "cgi stderr: %*s", nread, buf);
+            total_read += nread;
         } else if (nread == 0) {
-            // end of file
-            ngx_close_connection(ctx->c_stderr);
-            ctx->c_stderr = NULL;
-            return;
+            // different system has different behaviour here, do nothing
+            break;
         } else {
             if (ngx_errno == EAGAIN) {
-                // wait for more data
-                ngx_handle_read_event(ctx->c_stderr->read, 0);
-                return;
+                // wait for more data, also do nothing here
+                break;
             } else {
                 return;
             }
         }
+    }
+
+    if (total_read > 0) {
+        // need more data
+        ctx->c_stderr->read->ready = 0;
+        ngx_handle_read_event(ctx->c_stderr->read, 0);
+    } else {
+        // eof
+        ngx_close_connection(ctx->c_stderr);
+        ctx->c_stderr = NULL;
     }
 }
 
@@ -1908,7 +1930,7 @@ ngx_http_cgi_handler_3(ngx_http_cgi_ctx_t *ctx) {
         ctx->c_stdin->data = ctx;
         ctx->c_stdin->type = SOCK_STREAM;
 
-        ctx->c_stdin->write->handler = ngx_http_cgi_stdin_data_handler;
+        ctx->c_stdin->write->handler = ngx_http_cgi_stdin_handler;
         ctx->c_stdin->write->log = r->connection->log;
         if (ngx_handle_write_event(ctx->c_stdin->write, 0) != NGX_OK) {
             rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
@@ -1920,7 +1942,7 @@ ngx_http_cgi_handler_3(ngx_http_cgi_ctx_t *ctx) {
     if (ctx->pipe_stdout[PIPE_READ_END] != -1) {
         if (ngx_nonblocking(ctx->pipe_stdout[PIPE_READ_END]) == -1) {
             ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
-                    "ngx_nonblocking");
+                    "fcntl");
             rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
             goto error;
         }
@@ -1938,7 +1960,7 @@ ngx_http_cgi_handler_3(ngx_http_cgi_ctx_t *ctx) {
         ctx->c_stdout->data = ctx;
         ctx->c_stdout->type = SOCK_STREAM;
 
-        ctx->c_stdout->read->handler = ngx_http_cgi_stdout_data_handler;
+        ctx->c_stdout->read->handler = ngx_http_cgi_stdout_handler;
         ctx->c_stdout->read->log = r->connection->log;
         if (ngx_handle_read_event(ctx->c_stdout->read, 0) != NGX_OK) {
             rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
@@ -1968,7 +1990,7 @@ ngx_http_cgi_handler_3(ngx_http_cgi_ctx_t *ctx) {
         ctx->c_stderr->data = ctx;
         ctx->c_stderr->type = SOCK_STREAM;
 
-        ctx->c_stderr->read->handler = ngx_http_cgi_stderr_data_handler;
+        ctx->c_stderr->read->handler = ngx_http_cgi_stderr_handler;
         ctx->c_stderr->read->log = r->connection->log;
         if (ngx_handle_read_event(ctx->c_stderr->read, 0) != NGX_OK) {
             rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
