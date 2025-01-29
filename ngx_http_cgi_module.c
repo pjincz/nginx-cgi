@@ -625,8 +625,20 @@ ngx_http_cgi_prepare_cmd(ngx_http_cgi_ctx_t *ctx) {
 }
 
 
-#define _add_env_const(ctx, name, val) *(char**)ngx_array_push(ctx->env) = (name "=" val)
-#define _add_env_combine(ctx, combine) *(char**)ngx_array_push(ctx->env) = combine;
+static void _add_env_line(ngx_http_cgi_ctx_t *ctx, char *line, int name_len) {
+    char **envs = ctx->env->elts;
+    size_t i;
+
+    for (i = 0; i < ctx->env->nelts; ++i) {
+        if (ngx_strncmp(envs[i], line, name_len + 1) == 0) {
+            envs[i] = line;
+            return;
+        }
+    }
+    *(char**)ngx_array_push(ctx->env) = line;
+}
+#define _add_env_const(ctx, name, val) _add_env_line(ctx, (name "=" val), strlen(name))
+#define _add_env_combine(ctx, combine) _add_env_line(ctx, combine, strchr(combine, '=') - combine)
 static void _add_env_str(ngx_http_cgi_ctx_t *ctx, const char *name, const char *val, int val_len) {
     char *line;
     char *p;
@@ -644,7 +656,7 @@ static void _add_env_str(ngx_http_cgi_ctx_t *ctx, const char *name, const char *
     p = (char*)ngx_cpymem(p, val, val_len);
     *p = 0;
 
-    *(char**)ngx_array_push(ctx->env) = line;
+    _add_env_line(ctx, line, name_len);
 }
 static inline void _add_env_nstr(ngx_http_cgi_ctx_t *ctx, const char *name, ngx_str_t *str) {
     _add_env_str(ctx, name, (char*)str->data, str->len);
