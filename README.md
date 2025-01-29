@@ -4,10 +4,11 @@ Brings CGI support to Nginx.
 
 | OS      | Status                                 |
 | ------- | -------------------------------------- |
-| Windows | WIP...                                 |
 | Linux   | Tested with Ubuntu 24.04 and Debian 12 |
+| Darwin  | Tested with MacOS 15.1                 |
 | BSD     | Tested with FreeBSD 14.2               |
-| Mac OS  | Tested with MacOS 15.1                 |
+| Solaris | Tested with OmniOS r1510521            |
+| Windows | No plan, nginx barely supports Windows |
 
 ## Before everything
 

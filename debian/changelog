@@ -1,3 +1,10 @@
+nginx-cgi (0.8) unstable; urgency=medium
+
+  * Added support for MacOS
+  * Added support for Solaris
+
+ -- Chizhong Jin <pjincz@gmail.com>  Mon, 27 Jan 2025 02:57:46 +0800
+
 nginx-cgi (0.7) unstable; urgency=medium
 
   * Fixed: compiling error with gcc 11.4
