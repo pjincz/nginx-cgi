@@ -1,3 +1,9 @@
+nginx-cgi (0.9) unstable; urgency=medium
+
+  * Keep fd 0,1,2 even if looks unnecessary
+
+ -- Chizhong Jin <pjincz@gmail.com>  Thu, 30 Jan 2025 16:20:48 +0800
+
 nginx-cgi (0.8) unstable; urgency=medium
 
   * Added support for MacOS
