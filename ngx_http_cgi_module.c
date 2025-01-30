@@ -456,13 +456,11 @@ ngx_http_cgi_child_proc(ngx_http_cgi_ctx_t *ctx) {
     char **cmd = ctx->cmd->elts;
     char **env = ctx->env->elts;
 
-    close(0);
-    close(1);
-    close(2);
-
     // if there's no body, pipe_stdin will not created for saving fd
     if (ctx->pipe_stdin[PIPE_READ_END] != -1) {
         dup2(ctx->pipe_stdin[PIPE_READ_END], 0);
+    } else {
+        dup2(open("/dev/null", O_RDONLY), 0);
     }
 
     dup2(ctx->pipe_stdout[PIPE_WRITE_END], 1);
