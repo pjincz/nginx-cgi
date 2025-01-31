@@ -1,14 +1,15 @@
 # nginx-cgi plugin
 
-Brings CGI support to Nginx.
+Brings CGI support to [Nginx](https://github.com/nginx/nginx) and
+[Angie](https://github.com/webserver-llc/angie) webserver.
 
-| OS      | Status                                 |
-| ------- | -------------------------------------- |
-| Linux   | Tested with Ubuntu 24.04 and Debian 12 |
-| Darwin  | Tested with MacOS 15.1                 |
-| BSD     | Tested with FreeBSD 14.2               |
-| Solaris | Tested with OmniOS r1510521            |
-| Windows | No plan, nginx barely supports Windows |
+| OS      | Distribution                                 | Nginx  | Angie  |
+| ------- | -------------------------------------------- | ------ | ------ |
+| Linux   | Ubuntu 24.04 and Debian 12                   | Tested | Tested |
+| Darwin  | MacOS 15.1                                   | Tested | Tested |
+| BSD     | FreeBSD 14.2 and OpenBSD 7.6                 | Tested | Tested |
+| Solaris | OmniOS r1510521                              | Tested | Tested |
+| Windows | No plan, nginx barely supports Windows       |        |        |
 
 ## Before everything
 
