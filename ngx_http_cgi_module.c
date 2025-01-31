@@ -429,24 +429,20 @@ ngx_http_cgi_ctx_create(ngx_pool_t *pool) {
 }
 
 
-// Polyfill: Mac OS doesn't have `closefrom`
-#if (NGX_DARWIN)
+// Polyfill:
+//   * Mac OS doesn't have `closefrom`
+//   * glibc < 2.34 doesn't have `closefrom`
+#if (NGX_DARWIN) || ((NGX_LINUX) && (__GLIBC__ * 100 + __GLIBC_MINOR__ < 234))
 static void closefrom(int lowfd) {
-    DIR *dir = opendir("/dev/fd");
-    if (!dir) {
-        perror("opendir /dev/fd failed");
+    int maxfd = getdtablesize();
+    if (maxfd == -1) {
+        perror("getdtablesize");
         return;
     }
 
-    struct dirent *entry;
-    while ((entry = readdir(dir)) != NULL) {
-        int fd = atoi(entry->d_name);
-        if (fd >= lowfd && fd != dirfd(dir)) {
-            close(fd);
-        }
+    for (int i = lowfd; i < maxfd; i++) {
+        close(i);
     }
-
-    closedir(dir);
 }
 #endif
 
