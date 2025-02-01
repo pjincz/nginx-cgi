@@ -213,9 +213,9 @@ like(http_get('/cgi-bin/env.sh'), qr/^SERVER_ADDR=127.0.0.1$/m, 'SERVER_ADDR');
 ###############################################################################
 # misc tests
 
-# delayed error message wrong causes error
+# delayed error message won't causes error
 # note: I closed stderr once request finished, this will cause delayed error
-# message don't appears on log, but at least won't cause any trouble.
+# message don't appears on nginx log, but at least won't cause any trouble.
 http_get('/cgi-bin/delay-stderr.sh');
 
 # security test: hop-by-hop header not allowed in cgi script output
