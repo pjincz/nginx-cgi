@@ -1802,6 +1802,7 @@ ngx_http_cgi_stdout_handler(ngx_event_t *ev) {
 
     u_char buf[65536];
     int total_read = 0, nread = 0;
+    ngx_flag_t eof = 0;
 
     for (;;) {
         nread = read(c->fd, buf, sizeof(buf));
@@ -1812,7 +1813,11 @@ ngx_http_cgi_stdout_handler(ngx_event_t *ev) {
             }
             total_read += nread;
         } else if (nread == 0) {
-            // different system has different behaviour here, do nothing
+#if (NGX_SOLARIS)
+            // On Solaris, nread == 0 doesn't means eof
+#else
+            eof = 1;
+#endif
             break;
         } else {
             if (ngx_errno == EAGAIN) {
@@ -1825,10 +1830,13 @@ ngx_http_cgi_stdout_handler(ngx_event_t *ev) {
         }
     }
 
-    if (total_read > 0) {
-        // We have got some data from pipe, we are not sure whether pipe whether
-        // eof or not here, let's trigger ngx_handle_read_event again here.
-        // If pipe eof, ngx_http_cgi_stdout_handler will be triggered again.
+#if (NGX_SOLARIS)
+    if (total_read == 0) {
+        eof = 1;
+    }
+#endif
+
+    if (!eof) {
         rc = ngx_http_cgi_flush(ctx, 0);
         if (rc != NGX_OK) {
             goto error;
@@ -1839,8 +1847,6 @@ ngx_http_cgi_stdout_handler(ngx_event_t *ev) {
             goto error;
         }
     } else {
-        // nginx handles POLLIN and POLLHUP in the same handler, if no data read
-        // during handling, it means eof
         ngx_close_connection(ctx->c_stdout);
         ctx->c_stdout = NULL;
         ngx_http_finalize_request(r, ngx_http_cgi_flush(ctx, 1));
@@ -1862,6 +1868,7 @@ ngx_http_cgi_stderr_handler(ngx_event_t *ev) {
 
     u_char buf[65536];
     int total_read = 0, nread = 0;
+    ngx_flag_t eof = 0;
 
     for (;;) {
         nread = read(c->fd, buf, sizeof(buf));
@@ -1870,7 +1877,11 @@ ngx_http_cgi_stderr_handler(ngx_event_t *ev) {
                     "cgi stderr: %*s", nread, buf);
             total_read += nread;
         } else if (nread == 0) {
-            // different system has different behaviour here, do nothing
+#if (NGX_SOLARIS)
+            // On Solaris, nread == 0 doesn't means eof
+#else
+            eof = 1;
+#endif
             break;
         } else {
             if (ngx_errno == EAGAIN) {
@@ -1882,12 +1893,16 @@ ngx_http_cgi_stderr_handler(ngx_event_t *ev) {
         }
     }
 
-    if (total_read > 0) {
-        // need more data
+#if (NGX_SOLARIS)
+    if (total_read == 0) {
+        eof = 1;
+    }
+#endif
+
+    if (!eof) {
         ctx->c_stderr->read->ready = 0;
         ngx_handle_read_event(ctx->c_stderr->read, 0);
     } else {
-        // eof
         ngx_close_connection(ctx->c_stderr);
         ctx->c_stderr = NULL;
     }
