@@ -1834,6 +1834,9 @@ ngx_http_cgi_stdout_handler(ngx_event_t *ev) {
     if (total_read == 0) {
         eof = 1;
     }
+#else
+    // Suppress compiler warnings
+    (void)total_read;
 #endif
 
     if (!eof) {
@@ -1897,6 +1900,9 @@ ngx_http_cgi_stderr_handler(ngx_event_t *ev) {
     if (total_read == 0) {
         eof = 1;
     }
+#else
+    // Suppress compiler warnings
+    (void)total_read;
 #endif
 
     if (!eof) {
