@@ -1,3 +1,10 @@
+nginx-cgi (0.10) unstable; urgency=medium
+
+  * Fixed `closefrom` missing on old Linux system
+  * Fixed randomly connection hangs
+
+ -- Chizhong Jin <pjincz@gmail.com>  Sat, 01 Feb 2025 08:58:13 +0800
+
 nginx-cgi (0.9) unstable; urgency=medium
 
   * Keep fd 0,1,2 even if looks unnecessary
