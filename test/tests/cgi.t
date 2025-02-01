@@ -213,6 +213,11 @@ like(http_get('/cgi-bin/env.sh'), qr/^SERVER_ADDR=127.0.0.1$/m, 'SERVER_ADDR');
 ###############################################################################
 # misc tests
 
+# delayed error message wrong causes error
+# note: I closed stderr once request finished, this will cause delayed error
+# message don't appears on log, but at least won't cause any trouble.
+http_get('/cgi-bin/delay-stderr.sh');
+
 # security test: hop-by-hop header not allowed in cgi script output
 like(http_get('/cgi-bin/hop.sh'), qr/HTTP\/1\.[01] 500/m, 'hop-by-hop header not allowed');
 
