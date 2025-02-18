@@ -123,6 +123,12 @@ If you are using latest deb based system, such as Debian and Ubuntu, and not
 willing to debug the plugin, you can just following the `Quick start` to get a
 usable deb package.
 
+If you are using Angie, the cgi plugin has already in Angie's official repo.
+Please have a look here:
+<https://en.angie.software/angie/docs/installation/oss_packages/#install-thirdpartymodules-oss>
+
+Manual build guide:
+
 1. Checkout nginx and this plugin
 
    ```sh
