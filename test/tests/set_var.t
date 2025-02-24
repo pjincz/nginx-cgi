@@ -51,6 +51,6 @@ EOF
 $t->run();
 
 my $r = http_get('/cgi-bin/env.sh');
-like($r, qr/XXX=123/, 'custom var x');
+unlike($r, qr/XXX/, 'custom var x');
 like($r, qr/YYY=127.0.0.1/, 'custom var y');
 like($r, qr/QUERY_STRING=123/, 'replace QUERY_STRING');

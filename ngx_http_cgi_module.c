@@ -61,8 +61,6 @@ typedef struct {
 
 
 typedef struct ngx_http_cgi_loc_conf_s {
-    struct ngx_http_cgi_loc_conf_s * prev;
-
     ngx_flag_t     enabled;
     ngx_str_t      path;
     ngx_flag_t     strict_mode;
@@ -796,16 +794,8 @@ static ngx_int_t
 ngx_http_cgi_add_custom_vars(
     ngx_http_cgi_ctx_t *ctx, ngx_http_cgi_loc_conf_t *conf)
 {
-    ngx_int_t               rc;
     size_t                  nvar;
     ngx_http_cgi_ext_var_t *vars;
-
-    if (conf->prev) {
-        rc = ngx_http_cgi_add_custom_vars(ctx, conf->prev);
-        if (rc != NGX_OK) {
-            return rc;
-        }
-    }
 
     if (!conf->ext_vars) {
         return NGX_OK;
@@ -2490,8 +2480,6 @@ ngx_http_cgi_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_http_cgi_loc_conf_t  *conf = child;
     ngx_http_core_loc_conf_t  *clcf;
 
-    conf->prev = prev;
-
     ngx_conf_merge_value(conf->enabled, prev->enabled, 0);
     ngx_conf_merge_str_value(conf->path, prev->path,
             "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
@@ -2500,6 +2488,7 @@ ngx_http_cgi_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_conf_merge_value(conf->x_only, prev->x_only, 1);
     ngx_conf_merge_value(conf->cgi_stderr, prev->cgi_stderr, CGI_STDERR_PIPE);
     ngx_conf_merge_value(conf->rdns, prev->rdns, CGI_RDNS_OFF);
+    ngx_conf_merge_ptr_value(conf->ext_vars, prev->ext_vars, NULL);
 
     if (conf->enabled) {
         clcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
