@@ -409,7 +409,7 @@ Otherwise you will get an error of `no resolver defined to resolve`.
 author notes: do not enable this option, it will makes every request slower.
               this feature can be easily implemented by `dig -x` or `nslookup`
               in script when need. the only reason I impled this is just to make
-              the module fully compliant with the rfc3874 standard.
+              the module fully compliant with the rfc3875 standard.
 
 ### Standard Environment Variables
 
