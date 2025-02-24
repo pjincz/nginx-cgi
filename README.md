@@ -373,9 +373,14 @@ argument of this command is the value express of the var. It can contains nginx
 variables, see <https://nginx.org/en/docs/varindex.html> for more details.
 
 This option can appears more than 1 time to set multiple variables. If more than
-one option set the same var, then the last one works. If more than one location
-specified the same var, the nested one works. The option also can be used to
-override standard CGI vars.
+one option set the same var, then the last one works. These directives are
+inherited from the previous configuration level if and only if there's no
+cgi_set_var directives defined on the current level.
+
+The option also can be used to override standard CGI vars. This may be useful in
+some case, for example hacking old CGI script or simulate standard vars that are
+not supported by this plugin now (Such as `PATH_TRANSLATED`, `REMOTE_IDENT`).
+But it's not recommanded, it may introduce confusing issues to your system.
 
 #### `cgi_stderr <path>`
 
