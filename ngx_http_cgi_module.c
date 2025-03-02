@@ -64,7 +64,7 @@ typedef struct ngx_http_cgi_loc_conf_s {
     ngx_flag_t     enabled;
     ngx_str_t      path;
     ngx_flag_t     strict_mode;
-    ngx_array_t   *interpreter;  // array<char *>
+    ngx_array_t   *interpreter;  // array<ngx_http_complex_value_t>
     ngx_flag_t     x_only;
     ngx_fd_t       cgi_stderr;
     ngx_int_t      rdns;
@@ -602,10 +602,17 @@ ngx_http_cgi_prepare_cmd(ngx_http_cgi_ctx_t *ctx) {
     }
 
     if (ctx->conf->interpreter) {
-        ngx_memcpy(
-            ngx_array_push_n(ctx->cmd, ctx->conf->interpreter->nelts),
-            ctx->conf->interpreter->elts,
-            sizeof(char *) * ctx->conf->interpreter->nelts);
+        ngx_http_complex_value_t *args = ctx->conf->interpreter->elts;
+
+        for (size_t i = 0; i < ctx->conf->interpreter->nelts; ++i) {
+            ngx_str_t arg;
+            if (ngx_http_complex_value(ctx->r, &args[i], &arg) != NGX_OK) {
+                ngx_log_error(NGX_LOG_ERR, ctx->r->connection->log, 0,
+                    "failed to generate command line");
+                return NGX_HTTP_INTERNAL_SERVER_ERROR;
+            }
+            *(u_char**)ngx_array_push(ctx->cmd) = arg.data;
+        }
     }
 
     *(u_char**)ngx_array_push(ctx->cmd) = ctx->script.data;
@@ -811,8 +818,6 @@ ngx_http_cgi_add_custom_vars(
                 ctx->r, &vars[i].combine, &combine) != NGX_OK) {
             return NGX_HTTP_INTERNAL_SERVER_ERROR;
         }
-        // when I compile cv, it contains a 0 tail, so the eval result
-        // should contains 0 tail too.
         _add_env_combine(ctx, (char*)combine.data);
     }
 
@@ -2278,24 +2283,26 @@ ngx_http_cgi_set_interpreter(ngx_conf_t *cf, ngx_command_t *cmd, void *c) {
     }
 
     conf->interpreter = ngx_array_create(
-            cf->pool, cf->args->nelts - 1, sizeof(char *));
+            cf->pool, cf->args->nelts - 1, sizeof(ngx_http_complex_value_t));
     if (conf->interpreter == NULL) {
         return NGX_CONF_ERROR;
     }
 
     for (uint i = 1; i < cf->args->nelts; ++i) {
-        u_char **pstr = (u_char**)ngx_array_push(conf->interpreter);
-        if (pstr == NULL) {
+        ngx_http_complex_value_t *cv = ngx_array_push(conf->interpreter);
+        if (cv == NULL) {
             return NGX_CONF_ERROR;
         }
 
-        *pstr = ngx_palloc(cf->pool, args[i].len + 1);
-        if (*pstr == NULL) {
+        ngx_http_compile_complex_value_t ccv = {0};
+        ccv.cf = cf;
+        ccv.value = &args[i];
+        ccv.complex_value = cv;
+        ccv.zero = 1;  // indicate CC to generate C safe string
+
+        if (ngx_http_compile_complex_value(&ccv) != NGX_OK) {
             return NGX_CONF_ERROR;
         }
-
-        ngx_memcpy(*pstr, args[i].data, args[i].len);
-        (*pstr)[args[i].len] = 0;
     }
 
     return NGX_CONF_OK;
@@ -2426,7 +2433,7 @@ ngx_http_cgi_add_var(ngx_conf_t *cf, ngx_command_t *cmd, void *c) {
     }
     ext_var->name = args[1];
 
-    combine.len = args[1].len + 1 + args[2].len + 1;
+    combine.len = args[1].len + 1 + args[2].len;
     combine.data = ngx_palloc(cf->pool, combine.len);
     if (!combine.data) {
         return NGX_CONF_ERROR;
@@ -2434,12 +2441,12 @@ ngx_http_cgi_add_var(ngx_conf_t *cf, ngx_command_t *cmd, void *c) {
     ngx_memcpy(combine.data, args[1].data, args[1].len);
     combine.data[args[1].len] = '=';
     ngx_memcpy(combine.data + args[1].len + 1, args[2].data, args[2].len);
-    combine.data[args[1].len + 1 + args[2].len] = 0;
 
     ngx_memzero(&ccv, sizeof(ccv));
     ccv.cf = cf;
     ccv.value = &combine;
     ccv.complex_value = &ext_var->combine;
+    ccv.zero = 1;  // indicate CC to generate C safe string
     if (ngx_http_compile_complex_value(&ccv) != NGX_OK) {
         return NGX_CONF_ERROR;
     }
