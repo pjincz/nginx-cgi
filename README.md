@@ -344,12 +344,15 @@ turns off, bad cgi header be forward as it is.
 
 Default: on
 
-#### `cgi_interpreter <interpreter> [args...]`
+#### `cgi_interpreter [interpreter] [args...]`
 
 Set interpreter and interpreter args for cgi script.
 
 When this option is not empty, cgi script will be run with giving interpreter.
 Otherwise, script will be executed directly.
+
+This option can contains nginx variables, see
+<https://nginx.org/en/docs/varindex.html> for more details.
 
 Default: empty
 
