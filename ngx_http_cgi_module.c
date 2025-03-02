@@ -135,7 +135,7 @@ typedef struct ngx_http_cgi_ctx_s {
 
 
 static ngx_int_t ngx_http_cgi_init_process(ngx_cycle_t *cycle);
-static ngx_int_t ngx_http_cgi_handler_1(ngx_http_request_t *r);
+static ngx_int_t ngx_http_cgi_handler_init(ngx_http_request_t *r);
 static void *ngx_http_cgi_create_loc_conf(ngx_conf_t *cf);
 static char *ngx_http_cgi_merge_loc_conf(
     ngx_conf_t *cf, void *parent, void *child);
@@ -1911,7 +1911,7 @@ ngx_http_cgi_stderr_handler(ngx_event_t *ev) {
 
 
 void
-ngx_http_cgi_handler_3(ngx_http_cgi_ctx_t *ctx) {
+ngx_http_cgi_handler_real(ngx_http_cgi_ctx_t *ctx) {
     ngx_int_t                  rc;
     ngx_http_request_t        *r = ctx->r;
 
@@ -1957,6 +1957,10 @@ ngx_http_cgi_handler_3(ngx_http_cgi_ctx_t *ctx) {
         if (ngx_handle_write_event(ctx->c_stdin->write, 0) != NGX_OK) {
             rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
             goto error;
+        }
+
+        if (r->reading_body) {
+            r->read_event_handler = ngx_http_cgi_request_body_handler;
         }
     }
 
@@ -2091,7 +2095,7 @@ ngx_http_cgi_rdns_confirm_done(ngx_resolver_ctx_t *rctx) {
         }
         ngx_http_finalize_request(r, rc);
     } else {
-        ngx_http_cgi_handler_3(ctx);
+        ngx_http_cgi_handler_real(ctx);
     }
 }
 
@@ -2152,7 +2156,7 @@ ngx_http_cgi_rdns_done(ngx_resolver_ctx_t *rctx) {
         }
         goto error;
     }else {
-        ngx_http_cgi_handler_3(ctx);
+        ngx_http_cgi_handler_real(ctx);
     }
 
     return;
@@ -2164,65 +2168,13 @@ error:
 
 
 void
-ngx_http_cgi_handler_2(ngx_http_request_t *r) {
-    ngx_int_t                  rc;
-    ngx_http_cgi_ctx_t        *ctx;
-    ngx_resolver_ctx_t        *rctx;
-
-    ctx = ngx_http_get_module_ctx(r, ngx_http_cgi_module);
-    if (ctx == NULL) {
-        rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-        goto error;
-    }
-
-    rc = ngx_http_cgi_locate_script(ctx);
-    if (rc != NGX_OK) {
-        goto error;
-    }
-
-    // setup request body handler
-    if (r->reading_body) {
-        r->read_event_handler = ngx_http_cgi_request_body_handler;
-    }
-
-    if (ctx->conf->rdns & CGI_RDNS_ON) {
-        rctx = ngx_resolve_start(ctx->clcf->resolver, NULL);
-        if (rctx == NGX_NO_RESOLVER) {
-            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                "no resolver defined to resolve");
-            rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-            goto error;
-        } else if (rctx == NULL) {
-            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                "ngx_resolve_start");
-            rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-            goto error;
-        }
-
-        rctx->addr.sockaddr = r->connection->sockaddr;
-        rctx->addr.socklen = r->connection->socklen;
-        rctx->handler = ngx_http_cgi_rdns_done;
-        rctx->data = ctx;
-        rctx->timeout = CGI_DNS_TIMEOUT;
-
-        rc = ngx_resolve_addr(rctx);
-        if (rc != NGX_OK) {
-            goto error;
-        }
-    } else {
-        ngx_http_cgi_handler_3(ctx);
-    }
-
-    return;
-
-error:
-    ngx_http_finalize_request(r, rc);
-    return;
+ngx_http_cgi_empty_body_handler(ngx_http_request_t *r) {
+    // do nothing here
 }
 
 
 static ngx_int_t
-ngx_http_cgi_handler_1(ngx_http_request_t *r)
+ngx_http_cgi_handler_init(ngx_http_request_t *r)
 {
     ngx_int_t            rc;
     ngx_http_cgi_ctx_t  *ctx;
@@ -2263,10 +2215,42 @@ ngx_http_cgi_handler_1(ngx_http_request_t *r)
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
+    rc = ngx_http_cgi_locate_script(ctx);
+    if (rc != NGX_OK) {
+        ngx_http_discard_request_body(r);
+        return rc;
+    }
+
     r->request_body_no_buffering = 1;
-    rc = ngx_http_read_client_request_body(r, ngx_http_cgi_handler_2);
+    rc = ngx_http_read_client_request_body(r, ngx_http_cgi_empty_body_handler);
     if (rc >= NGX_HTTP_SPECIAL_RESPONSE) {
         return rc;
+    }
+
+    if (ctx->conf->rdns) {
+        ngx_resolver_ctx_t *rctx = ngx_resolve_start(ctx->clcf->resolver, NULL);
+        if (rctx == NGX_NO_RESOLVER) {
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                "no resolver defined to resolve");
+            return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        } else if (rctx == NULL) {
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                "ngx_resolve_start");
+            return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        }
+
+        rctx->addr.sockaddr = r->connection->sockaddr;
+        rctx->addr.socklen = r->connection->socklen;
+        rctx->handler = ngx_http_cgi_rdns_done;
+        rctx->data = ctx;
+        rctx->timeout = CGI_DNS_TIMEOUT;
+
+        rc = ngx_resolve_addr(rctx);
+        if (rc != NGX_OK) {
+            return rc;
+        }
+    } else {
+        ngx_http_cgi_handler_real(ctx);
     }
 
     return NGX_DONE;
@@ -2503,7 +2487,7 @@ ngx_http_cgi_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
             return NGX_CONF_ERROR;
         }
 
-        clcf->handler = ngx_http_cgi_handler_1;
+        clcf->handler = ngx_http_cgi_handler_init;
     }
 
     return NGX_CONF_OK;
