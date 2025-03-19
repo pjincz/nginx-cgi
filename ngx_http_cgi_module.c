@@ -825,6 +825,56 @@ ngx_http_cgi_add_custom_vars(
 }
 
 
+// Nginx discards original URI after rewriting.
+// That's really a bad news for us.
+// We have 2 ways to solve this problem:
+//   * Install a handler before rewring phase, and save uri before rewriting.
+//     That's bad for our senario. We will make every request slower, even if
+//     CGI module is not enabled on those locations.
+//   * Re-constructs URI when CGI module is enabled.
+//     That's also a bad idea. Because nginx may change the way to parse URI.
+//     And they didn't mark those methods as public in their document.
+// After comparing of aboving ways. Maybe the 2nd one is a bit better.
+// The deep reason is CGI module is for slow senarios, we don't care to make it
+// slower more.
+// So we made this function to reconstruct original URI here.
+static ngx_int_t
+ngx_http_cgi_get_original_uri(ngx_http_request_t *r, ngx_str_t *uri) {
+    // The impl is mostly copied from: ngx_http_process_request_uri
+    ngx_http_core_srv_conf_t  *cscf;
+
+    size_t uri_len = r->args_start ? r->args_start - 1 - r->uri_start
+                                   : r->uri_end - r->uri_start;
+
+    if (r->complex_uri || r->quoted_uri || r->empty_path_in_uri) {
+        // mock ngx_http_request_t
+        ngx_http_request_t sr = *r;
+
+        if (r->empty_path_in_uri) {
+            uri_len += 1;
+        }
+
+        sr.uri.len = uri_len;
+        sr.uri.data = ngx_pnalloc(r->pool, uri_len);
+        if (!sr.uri.data) {
+            return NGX_ERROR;
+        }
+
+        cscf = ngx_http_get_module_srv_conf(r, ngx_http_core_module);
+
+        ngx_int_t rc = ngx_http_parse_complex_uri(r, cscf->merge_slashes);
+        if (rc == NGX_OK) {
+            *uri = sr.uri;
+        }
+        return rc;
+    } else {
+        uri->data = r->uri_start;
+        uri->len = uri_len;
+        return NGX_OK;
+    }
+}
+
+
 static ngx_int_t
 ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
     // there's 17 standard vars in rfc3875
@@ -884,9 +934,10 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
         _add_env_const(ctx, "REQUEST_SCHEME", "http");
     }
 
-    // unparsed_uri stores uri before rewriting
-    // uri stores uri after rewriting
-    _add_env_nstr(ctx, "REQUEST_URI", &r->unparsed_uri);
+    ngx_str_t original_uri;
+    if (ngx_http_cgi_get_original_uri(r, &original_uri) == NGX_OK) {
+        _add_env_nstr(ctx, "REQUEST_URI", &original_uri);
+    }
     _add_env_str(ctx, "SCRIPT_NAME",
                  (char*)r->uri.data, r->uri.len - ctx->path_info.len);
 

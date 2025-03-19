@@ -569,6 +569,9 @@ Client port number.
 The raw uri before rewriting. If you want the URL after rewriting, try
 `SCRIPT_NAME` + `PATH_INFO`.
 
+Note: this variable doesn't same to nginx varible `$request_uri`. You can find
+the document at <https://httpd.apache.org/docs/2.4/mod/mod_rewrite.html>.
+
 * `SCRIPT_FILENAME` (non-standard, impled by apache2)
 
 The full path to script.

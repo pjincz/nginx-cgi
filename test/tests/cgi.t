@@ -206,7 +206,7 @@ EOF
 like(http_get('/cgi-bin/env.sh'), qr/^DOCUMENT_ROOT=$ENV{TEST_ROOT_DIR}$/m, 'DOCUMENT_ROOT');
 like(http_get('/cgi-bin/env.sh'), qr/^REMOTE_PORT=.*$/m, 'REMOTE_PORT');
 like(http_get('/cgi-bin/env.sh'), qr/^REQUEST_SCHEME=http$/m, 'REQUEST_SCHEME');
-like(http_get('/cgi-bin/env.sh'), qr/^REQUEST_URI=\/cgi-bin\/env.sh$/m, 'REQUEST_URI');
+like(http_get('/cgi-bin/env.sh?asdf=1'), qr/^REQUEST_URI=\/cgi-bin\/env.sh$/m, 'REQUEST_URI');
 like(http_get('/cgi-bin/env.sh'), qr/^SCRIPT_FILENAME=$ENV{TEST_ROOT_DIR}\/cgi-bin\/env.sh$/m, 'SCRIPT_FILENAME');
 like(http_get('/cgi-bin/env.sh'), qr/^SERVER_ADDR=127.0.0.1$/m, 'SERVER_ADDR');
 
