@@ -153,7 +153,7 @@ static ngx_command_t  ngx_http_cgi_commands[] = {
     // Default: off
     {
         ngx_string("cgi"),
-        NGX_HTTP_LOC_CONF | NGX_CONF_TAKE12,
+        NGX_HTTP_LOC_CONF | NGX_HTTP_SRV_CONF | NGX_CONF_TAKE12,
         ngx_http_cgi_set_cgi,
         NGX_HTTP_LOC_CONF_OFFSET,
         0,
@@ -163,7 +163,7 @@ static ngx_command_t  ngx_http_cgi_commands[] = {
     // Alias of `cgi pass`
     {
         ngx_string("cgi_pass"),
-        NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+        NGX_HTTP_LOC_CONF | NGX_HTTP_SRV_CONF | NGX_CONF_TAKE1,
         ngx_http_cgi_set_cgi,
         NGX_HTTP_LOC_CONF_OFFSET,
         0,
@@ -174,7 +174,7 @@ static ngx_command_t  ngx_http_cgi_commands[] = {
     // Default: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     {
         ngx_string("cgi_path"),
-        NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+        NGX_HTTP_LOC_CONF | NGX_HTTP_SRV_CONF | NGX_CONF_TAKE1,
         ngx_conf_set_str_slot,
         NGX_HTTP_LOC_CONF_OFFSET,
         offsetof(ngx_http_cgi_loc_conf_t, path),
@@ -187,7 +187,7 @@ static ngx_command_t  ngx_http_cgi_commands[] = {
     // Default: on
     {
         ngx_string("cgi_strict"),
-        NGX_HTTP_LOC_CONF | NGX_CONF_FLAG,
+        NGX_HTTP_LOC_CONF | NGX_HTTP_SRV_CONF | NGX_CONF_FLAG,
         ngx_conf_set_flag_slot,
         NGX_HTTP_LOC_CONF_OFFSET,
         offsetof(ngx_http_cgi_loc_conf_t, strict_mode),
@@ -200,7 +200,7 @@ static ngx_command_t  ngx_http_cgi_commands[] = {
     // Default: empty
     {
         ngx_string("cgi_interpreter"),
-        NGX_HTTP_LOC_CONF | NGX_CONF_ANY,
+        NGX_HTTP_LOC_CONF | NGX_HTTP_SRV_CONF | NGX_CONF_ANY,
         ngx_http_cgi_set_interpreter,
         NGX_HTTP_LOC_CONF_OFFSET,
         offsetof(ngx_http_cgi_loc_conf_t, interpreter),
@@ -215,7 +215,7 @@ static ngx_command_t  ngx_http_cgi_commands[] = {
     // Default: on
     {
         ngx_string("cgi_x_only"),
-        NGX_HTTP_LOC_CONF | NGX_CONF_FLAG,
+        NGX_HTTP_LOC_CONF | NGX_HTTP_SRV_CONF | NGX_CONF_FLAG,
         ngx_conf_set_flag_slot,
         NGX_HTTP_LOC_CONF_OFFSET,
         offsetof(ngx_http_cgi_loc_conf_t, x_only),
@@ -232,7 +232,7 @@ static ngx_command_t  ngx_http_cgi_commands[] = {
     // nginx's stderr by set it as `/dev/stderr`.
     {
         ngx_string("cgi_stderr"),
-        NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+        NGX_HTTP_LOC_CONF | NGX_HTTP_SRV_CONF | NGX_CONF_TAKE1,
         ngx_http_cgi_set_stderr,
         NGX_HTTP_LOC_CONF_OFFSET,
         offsetof(ngx_http_cgi_loc_conf_t, cgi_stderr),
@@ -257,7 +257,7 @@ static ngx_command_t  ngx_http_cgi_commands[] = {
     //               rfc3874 standard.
     {
         ngx_string("cgi_rdns"),
-        NGX_HTTP_LOC_CONF | NGX_CONF_TAKE12,
+        NGX_HTTP_LOC_CONF | NGX_HTTP_SRV_CONF | NGX_CONF_TAKE12,
         ngx_http_cgi_set_rdns,
         NGX_HTTP_LOC_CONF_OFFSET,
         offsetof(ngx_http_cgi_loc_conf_t, rdns),
@@ -268,7 +268,7 @@ static ngx_command_t  ngx_http_cgi_commands[] = {
     // Pass extra environment variables to CGI script.
     {
         ngx_string("cgi_set_var"),
-        NGX_HTTP_LOC_CONF | NGX_CONF_TAKE2,
+        NGX_HTTP_LOC_CONF | NGX_HTTP_SRV_CONF | NGX_CONF_TAKE2,
         ngx_http_cgi_add_var,
         NGX_HTTP_LOC_CONF_OFFSET,
         offsetof(ngx_http_cgi_loc_conf_t, ext_vars),
