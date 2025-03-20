@@ -160,6 +160,16 @@ static ngx_command_t  ngx_http_cgi_commands[] = {
         NULL
     },
 
+    // Alias of `cgi pass`
+    {
+        ngx_string("cgi_pass"),
+        NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+        ngx_http_cgi_set_cgi,
+        NGX_HTTP_LOC_CONF_OFFSET,
+        0,
+        NULL
+    },
+
     // Change cgi script PATH environment variable
     // Default: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     {
@@ -2325,25 +2335,42 @@ ngx_http_cgi_set_cgi(ngx_conf_t *cf, ngx_command_t *cmd, void *c) {
         return "is duplicated";
     }
 
-    ngx_flag_t is_on = ngx_strcasecmp(args[1].data, (u_char *)"on") == 0;
-    ngx_flag_t is_off = ngx_strcasecmp(args[1].data, (u_char *)"of") == 0;
-    ngx_flag_t is_pass = ngx_strcasecmp(args[1].data, (u_char *)"pass") == 0;
+    ngx_flag_t is_on = 0;
+    ngx_flag_t is_off = 0;
+    ngx_flag_t is_pass = 0;
+    ngx_str_t script_path;
+
+    if (ngx_strcasecmp(args[0].data, (u_char *)"cgi") == 0) {
+        if (ngx_strcasecmp(args[1].data, (u_char *)"on") == 0) {
+            if (narg != 2) { return NGX_CONF_ERROR; }
+            is_on = 1;
+        } else if (ngx_strcasecmp(args[1].data, (u_char *)"off") == 0) {
+            if (narg != 2) { return NGX_CONF_ERROR; }
+            is_off = 1;
+        } else if (ngx_strcasecmp(args[1].data, (u_char *)"pass") == 0) {
+            if (narg != 3) { return NGX_CONF_ERROR; }
+            is_pass = 1;
+            script_path = args[2];
+        } else {
+            return NGX_CONF_ERROR;
+        }
+    } else if (ngx_strcasecmp(args[0].data, (u_char *)"cgi_pass") == 0) {
+        if (narg != 2) { return NGX_CONF_ERROR; }
+        is_pass = 1;
+        script_path = args[1];
+    } else {
+        return NGX_CONF_ERROR;
+    }
 
     if (is_on || is_off) {
-        if (narg != 2) {
-            return NGX_CONF_ERROR;
-        }
         conf->enabled = is_on;
     } else if (is_pass) {
-        if (narg != 3) {
-            return NGX_CONF_ERROR;
-        }
         conf->enabled = 1;
         conf->script = ngx_palloc(cf->pool, sizeof(*conf->script));
 
         ngx_http_compile_complex_value_t ccv = {0};
         ccv.cf = cf;
-        ccv.value = &args[2];
+        ccv.value = &script_path;
         ccv.complex_value = conf->script;
         ccv.zero = 1;
         if (ngx_http_compile_complex_value(&ccv) != NGX_OK) {

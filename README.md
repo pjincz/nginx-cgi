@@ -347,6 +347,10 @@ If you specify `off` here, the plugin will be disabled.
 
 Default: off
 
+#### `cgi_pass <script_path>`
+
+Alias of `cgi pass <script_path>`.
+
 #### `cgi_path <PATH>`
 
 Change cgi script PATH environment variable
