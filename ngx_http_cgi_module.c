@@ -10,10 +10,6 @@
 #include <assert.h>
 
 
-// Non-used stack will not mapped to real memory in most of modem OS
-// Allow a bigger one, to prevent run out of stack.
-#define STACK_SIZE         (1024 * 64)
-
 #define PIPE_READ_END      0
 #define PIPE_WRITE_END     1
 
@@ -61,15 +57,16 @@ typedef struct {
 
 
 typedef struct ngx_http_cgi_loc_conf_s {
-    ngx_flag_t     enabled;
-    ngx_str_t      path;
-    ngx_flag_t     strict_mode;
-    ngx_array_t   *interpreter;  // array<ngx_http_complex_value_t>
-    ngx_flag_t     x_only;
-    ngx_fd_t       cgi_stderr;
-    ngx_int_t      rdns;
+    ngx_flag_t                enabled;
+    ngx_http_complex_value_t *script;
+    ngx_str_t                 path;
+    ngx_flag_t                strict_mode;
+    ngx_array_t              *interpreter;  // array<ngx_http_complex_value_t>
+    ngx_flag_t                x_only;
+    ngx_fd_t                  cgi_stderr;
+    ngx_int_t                 rdns;
 
-    ngx_array_t   *ext_vars;  // array<ngx_http_cgi_ext_var_t>
+    ngx_array_t              *ext_vars;  // array<ngx_http_cgi_ext_var_t>
 } ngx_http_cgi_loc_conf_t;
 
 
@@ -109,7 +106,6 @@ typedef struct ngx_http_cgi_ctx_s {
     // path_translated: translated subpath, see rfc3875 4.1.6
     ngx_str_t                      script;      // c compatible
     ngx_str_t                      path_info;
-    ngx_str_t                      path_translated;
     ngx_str_t                      remote_host;
 
     ngx_array_t                   *cmd;         // array<char*> with tail null
@@ -139,6 +135,8 @@ static ngx_int_t ngx_http_cgi_handler_init(ngx_http_request_t *r);
 static void *ngx_http_cgi_create_loc_conf(ngx_conf_t *cf);
 static char *ngx_http_cgi_merge_loc_conf(
     ngx_conf_t *cf, void *parent, void *child);
+static char * ngx_http_cgi_set_cgi(
+    ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char * ngx_http_cgi_set_interpreter(
     ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char * ngx_http_cgi_set_stderr(
@@ -155,10 +153,10 @@ static ngx_command_t  ngx_http_cgi_commands[] = {
     // Default: off
     {
         ngx_string("cgi"),
-        NGX_HTTP_LOC_CONF | NGX_CONF_FLAG,
-        ngx_conf_set_flag_slot,
+        NGX_HTTP_LOC_CONF | NGX_CONF_TAKE12,
+        ngx_http_cgi_set_cgi,
         NGX_HTTP_LOC_CONF_OFFSET,
-        offsetof(ngx_http_cgi_loc_conf_t, enabled),
+        0,
         NULL
     },
 
@@ -310,7 +308,6 @@ static void
 ngx_http_cgi_sigchld_handler(int sid, siginfo_t *sinfo, void *ucontext) {
     ngx_http_cgi_process_t *prev = NULL;
     ngx_http_cgi_process_t *cur = _gs_http_cgi_processes;
-    int                          wstatus;
 
     for (; cur != NULL; prev = cur, cur = prev->next) {
         if (cur->pid == sinfo->si_pid) {
@@ -319,6 +316,7 @@ ngx_http_cgi_sigchld_handler(int sid, siginfo_t *sinfo, void *ucontext) {
     }
 
     if (cur) {
+        int wstatus = 0;
         pid_t pid = waitpid(cur->pid, &wstatus, WNOHANG);
         if (pid > 0) {
             // process finished
@@ -486,7 +484,6 @@ ngx_http_cgi_locate_script(ngx_http_cgi_ctx_t *ctx) {
     ngx_file_info_t            script_info;
     int                        uri_remaining = 0;
     size_t                     root_len;
-    ngx_str_t                  orig_uri;
 
     ngx_flag_t                 regular_location;
 
@@ -558,16 +555,6 @@ ngx_http_cgi_locate_script(ngx_http_cgi_ctx_t *ctx) {
     if (uri_remaining > 0) {
         ctx->path_info.data = r->uri.data + r->uri.len - uri_remaining;
         ctx->path_info.len = uri_remaining;
-
-        // fake r->uri, and change it back later
-        orig_uri = r->uri;
-        r->uri = ctx->path_info;
-        if (!ngx_http_map_uri_to_path(r, &ctx->path_translated, &root_len, 0))
-        {
-            r->uri = orig_uri;
-            return NGX_HTTP_INTERNAL_SERVER_ERROR;
-        }
-        r->uri = orig_uri;
     }
 
     ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
@@ -965,9 +952,18 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
 
     if (ctx->path_info.len > 0) {
         _add_env_nstr(ctx, "PATH_INFO", &ctx->path_info);
-    }
-    if (ctx->path_translated.len > 0) {
-        _add_env_nstr(ctx, "PATH_TRANSLATED", &ctx->path_translated);
+
+        // hack request, and run ngx_http_map_uri_to_path
+        ngx_str_t orig_uri = r->uri;
+        size_t root_len = 0;
+        ngx_str_t path_translated;
+
+        r->uri = ctx->path_info;
+        if (ngx_http_map_uri_to_path(r, &path_translated, &root_len, 0))
+        {
+            _add_env_nstr(ctx, "PATH_TRANSLATED", &path_translated);
+        }
+        r->uri = orig_uri;
     }
 
     // this field appears only if an auth module has been setup, and runs before
@@ -2266,7 +2262,18 @@ ngx_http_cgi_handler_init(ngx_http_request_t *r)
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
-    rc = ngx_http_cgi_locate_script(ctx);
+    if (ctx->conf->script) {
+        rc = ngx_http_complex_value(ctx->r, ctx->conf->script, &ctx->script);
+        if (rc == NGX_OK) {
+            ctx->path_info = r->uri;
+
+            ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                "cgi script path: %V, path_info: %V",
+                &ctx->script, &ctx->path_info);
+        }
+    } else {
+        rc = ngx_http_cgi_locate_script(ctx);
+    }
     if (rc != NGX_OK) {
         ngx_http_discard_request_body(r);
         return rc;
@@ -2305,6 +2312,46 @@ ngx_http_cgi_handler_init(ngx_http_request_t *r)
     }
 
     return NGX_DONE;
+}
+
+
+static char *
+ngx_http_cgi_set_cgi(ngx_conf_t *cf, ngx_command_t *cmd, void *c) {
+    ngx_http_cgi_loc_conf_t  *conf = c;
+    ngx_uint_t                narg = cf->args->nelts;
+    ngx_str_t                *args = cf->args->elts;
+
+    if (conf->enabled != NGX_CONF_UNSET) {
+        return "is duplicated";
+    }
+
+    ngx_flag_t is_on = ngx_strcasecmp(args[1].data, (u_char *)"on") == 0;
+    ngx_flag_t is_off = ngx_strcasecmp(args[1].data, (u_char *)"of") == 0;
+    ngx_flag_t is_pass = ngx_strcasecmp(args[1].data, (u_char *)"pass") == 0;
+
+    if (is_on || is_off) {
+        if (narg != 2) {
+            return NGX_CONF_ERROR;
+        }
+        conf->enabled = is_on;
+    } else if (is_pass) {
+        if (narg != 3) {
+            return NGX_CONF_ERROR;
+        }
+        conf->enabled = 1;
+        conf->script = ngx_palloc(cf->pool, sizeof(*conf->script));
+
+        ngx_http_compile_complex_value_t ccv = {0};
+        ccv.cf = cf;
+        ccv.value = &args[2];
+        ccv.complex_value = conf->script;
+        ccv.zero = 1;
+        if (ngx_http_compile_complex_value(&ccv) != NGX_OK) {
+            return NGX_CONF_ERROR;
+        }
+    }
+
+    return NGX_CONF_OK;
 }
 
 
@@ -2522,7 +2569,10 @@ ngx_http_cgi_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_http_cgi_loc_conf_t  *conf = child;
     ngx_http_core_loc_conf_t  *clcf;
 
-    ngx_conf_merge_value(conf->enabled, prev->enabled, 0);
+    if (conf->enabled == NGX_CONF_UNSET) {
+        conf->enabled = prev->enabled;
+        conf->script = prev->script;
+    }
     ngx_conf_merge_str_value(conf->path, prev->path,
             "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
     ngx_conf_merge_value(conf->strict_mode, prev->strict_mode, 1);

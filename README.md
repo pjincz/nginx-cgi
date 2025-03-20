@@ -323,9 +323,27 @@ For more information:
 
 ### Options
 
-#### `cgi <on|off>`
+#### `cgi <on|off>` or `cgi pass <script_path>`
 
 Enable or disable cgi module on giving location block.
+
+If you specify `on` here, the plugin will work like a traditional CGI server.
+It parse the request uri first, and then find the script under document root
+directory with request uri. Then it split request uri to `SCRIPT_NAME` and
+`PATH_INFO`. This is good, if you have an old CGI project or you want to
+strictly follow rfc3875.
+
+I also provided a nginx style syntax here. If you specify `cgi pass` here, the
+plugin will skip the step to locate the CGI script. It uses the the value you
+specified in the second argument directly. You can references nginx variables in
+the second argument, eg: `cgi pass $document_root$uri`. The aboving example did
+something like rfc3875, but not equal. In this form, request uri will be
+assigned to `PATH_INFO` directly. And `SCRIPT_NAME` will be empty.
+
+The second form is really good for dynamic content generating. It get around the
+complex and unnecessary uri rewriting.
+
+If you specify `off` here, the plugin will be disabled.
 
 Default: off
 
