@@ -351,6 +351,38 @@ Default: off
 
 Alias of `cgi pass <script_path>`.
 
+#### `cgi_interpreter [interpreter] [args...]`
+
+Set interpreter and interpreter args for cgi script.
+
+When this option is not empty, cgi script will be run with giving interpreter.
+Otherwise, script will be executed directly.
+
+This option can contains nginx variables, see
+<https://nginx.org/en/docs/varindex.html> for more details.
+
+Default: empty
+
+### `cgi_working_dir <dir>`
+
+Set the working directory of CGI script.
+
+If this value is set to empty, then the CGI script will inherit nginx' working
+directory.
+
+If this value is set to an non-empty string, the CGI script will be launched
+with giving directory.
+
+The action of changing working directory may failed. For example, giving
+directory doesn't exist, no perm or name too long. In this case, script will
+failed to execute.
+
+This option doesn't change the way to find interpreter or script (if they are
+specified with related path, they are always related to nginx' working
+directory).
+
+Default: empty
+
 #### `cgi_path <PATH>`
 
 Change cgi script PATH environment variable
@@ -365,18 +397,6 @@ When strict mode turns on, bad cgi header will cause 500 error. When strict mode
 turns off, bad cgi header be forward as it is.
 
 Default: on
-
-#### `cgi_interpreter [interpreter] [args...]`
-
-Set interpreter and interpreter args for cgi script.
-
-When this option is not empty, cgi script will be run with giving interpreter.
-Otherwise, script will be executed directly.
-
-This option can contains nginx variables, see
-<https://nginx.org/en/docs/varindex.html> for more details.
-
-Default: empty
 
 #### `cgi_set_var <name> <value>`
 

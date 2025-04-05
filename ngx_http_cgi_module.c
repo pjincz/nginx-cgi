@@ -59,9 +59,10 @@ typedef struct {
 typedef struct ngx_http_cgi_loc_conf_s {
     ngx_flag_t                enabled;
     ngx_http_complex_value_t *script;
+    ngx_array_t              *interpreter;  // array<ngx_http_complex_value_t>
+    ngx_str_t                 working_dir;
     ngx_str_t                 path;
     ngx_flag_t                strict_mode;
-    ngx_array_t              *interpreter;  // array<ngx_http_complex_value_t>
     ngx_fd_t                  cgi_stderr;
     ngx_int_t                 rdns;
 
@@ -94,7 +95,7 @@ typedef struct ngx_http_cgi_process_ctx_s {
     pid_t                             pid;
 
     ngx_int_t                         spawning_errno;
-    const char *                      spawning_err_msg;
+    const char *                      spawning_errop;
 
     struct ngx_http_cgi_process_ctx_s *next;
 } ngx_http_cgi_process_ctx_t;
@@ -174,6 +175,31 @@ static ngx_command_t  ngx_http_cgi_commands[] = {
         NULL
     },
 
+    // Set interpreter and interpreter args for cgi script
+    // When this option is not empty, cgi script will be run with giving
+    // interpreter. Otherwise, script will be executed directly.
+    // Default: empty
+    {
+        ngx_string("cgi_interpreter"),
+        NGX_HTTP_LOC_CONF | NGX_HTTP_SRV_CONF | NGX_CONF_ANY,
+        ngx_http_cgi_set_interpreter,
+        NGX_HTTP_LOC_CONF_OFFSET,
+        offsetof(ngx_http_cgi_loc_conf_t, interpreter),
+        NULL
+    },
+
+    // Set cgi working directory
+    // If this is set to a non-empty value, the CGI script will be launched with
+    // giving directory.
+    {
+        ngx_string("cgi_working_dir"),
+        NGX_HTTP_LOC_CONF | NGX_HTTP_SRV_CONF | NGX_CONF_TAKE1,
+        ngx_conf_set_str_slot,
+        NGX_HTTP_LOC_CONF_OFFSET,
+        offsetof(ngx_http_cgi_loc_conf_t, working_dir),
+        NULL
+    },
+
     // Change cgi script PATH environment variable
     // Default: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     {
@@ -195,19 +221,6 @@ static ngx_command_t  ngx_http_cgi_commands[] = {
         ngx_conf_set_flag_slot,
         NGX_HTTP_LOC_CONF_OFFSET,
         offsetof(ngx_http_cgi_loc_conf_t, strict_mode),
-        NULL
-    },
-
-    // Set interpreter and interpreter args for cgi script
-    // When this option is not empty, cgi script will be run be giving
-    // interpreter. Otherwise, script will be executed directly.
-    // Default: empty
-    {
-        ngx_string("cgi_interpreter"),
-        NGX_HTTP_LOC_CONF | NGX_HTTP_SRV_CONF | NGX_CONF_ANY,
-        ngx_http_cgi_set_interpreter,
-        NGX_HTTP_LOC_CONF_OFFSET,
-        offsetof(ngx_http_cgi_loc_conf_t, interpreter),
         NULL
     },
 
@@ -450,6 +463,35 @@ ngx_http_cgi_child_proc(ngx_http_cgi_ctx_t *ctx,
     char **cmd = ctx->cmd->elts;
     char **env = ctx->env->elts;
 
+    char buf[PATH_MAX];
+    char *exec_path = cmd[0];
+
+    if (cmd[0][0] != '/') {
+        if (getcwd(buf, sizeof(buf)) == NULL) {
+            pctx->spawning_errop = "get current working dir";
+            pctx->spawning_errno = errno;
+            return 1;
+        }
+        size_t cwd_len = strlen(buf);
+        size_t cmd_len = strlen(cmd[0]);
+        if (cwd_len + 1 + cmd_len + 1 >= sizeof(buf)) {
+            pctx->spawning_errop = "relpath to abspath";
+            pctx->spawning_errno = ENAMETOOLONG;
+            return 1;
+        }
+        buf[cwd_len] = '/';
+        strcpy(buf + cwd_len + 1, cmd[0]);
+        exec_path = buf;
+    }
+
+    if (ctx->conf->working_dir.len) {
+        if (chdir((char *)ctx->conf->working_dir.data) == -1) {
+            pctx->spawning_errop = "change working dir";
+            pctx->spawning_errno = errno;
+            return 1;
+        }
+    }
+
     // if there's no body, pipe_stdin will not created for saving fd
     if (ctx->pipe_stdin[PIPE_READ_END] != -1) {
         dup2(ctx->pipe_stdin[PIPE_READ_END], 0);
@@ -472,9 +514,9 @@ ngx_http_cgi_child_proc(ngx_http_cgi_ctx_t *ctx,
     closefrom(3);
 
     // Do not use `p` version here, to avoid security issue
-    if (execve(cmd[0], cmd, env) == -1) {
+    if (execve(exec_path, cmd, env) == -1) {
+        pctx->spawning_errop = "exec";
         pctx->spawning_errno = errno;
-        pctx->spawning_err_msg = "execve";
         // 126 means cannot executing binary in POSIX system.
         return 126;
     }
@@ -1134,7 +1176,8 @@ ngx_http_cgi_spawn_child_process(ngx_http_cgi_ctx_t *ctx) {
                     "spawned cgi process: %d", child_pid);
             } else {
                 ngx_log_error(NGX_LOG_ERR, r->connection->log,
-                    pctx->spawning_errno, pctx->spawning_err_msg);
+                    pctx->spawning_errno, "Failed to spawn CGI process: %s",
+                    pctx->spawning_errop);
 
                 if (pctx->spawning_errno == EACCES) {
                     rc = NGX_HTTP_FORBIDDEN;
@@ -2579,6 +2622,7 @@ ngx_http_cgi_create_loc_conf(ngx_conf_t *cf)
     }
 
     conf->enabled = NGX_CONF_UNSET;
+    // conf->working_dir is initialized by ngx_pcalloc
     // conf->path is initialized by ngx_pcalloc
     conf->strict_mode = NGX_CONF_UNSET;
     conf->interpreter = NGX_CONF_UNSET_PTR;
@@ -2601,6 +2645,7 @@ ngx_http_cgi_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
         conf->enabled = prev->enabled;
         conf->script = prev->script;
     }
+    ngx_conf_merge_str_value(conf->working_dir, prev->working_dir, "");
     ngx_conf_merge_str_value(conf->path, prev->path,
             "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
     ngx_conf_merge_value(conf->strict_mode, prev->strict_mode, 1);
