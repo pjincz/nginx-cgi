@@ -60,7 +60,7 @@ typedef struct ngx_http_cgi_loc_conf_s {
     ngx_flag_t                enabled;
     ngx_http_complex_value_t *script;
     ngx_array_t              *interpreter;  // array<ngx_http_complex_value_t>
-    ngx_str_t                 working_dir;
+    ngx_http_complex_value_t *working_dir;
     ngx_str_t                 path;
     ngx_flag_t                strict_mode;
     ngx_fd_t                  cgi_stderr;
@@ -115,6 +115,7 @@ typedef struct ngx_http_cgi_ctx_s {
 
     ngx_array_t                   *cmd;         // array<char*> with tail null
     ngx_array_t                   *env;         // array<char*> with tail null
+    ngx_str_t                      working_dir;
 
     pipe_pair_t                    pipe_stdin;
     pipe_pair_t                    pipe_stdout;
@@ -194,7 +195,7 @@ static ngx_command_t  ngx_http_cgi_commands[] = {
     {
         ngx_string("cgi_working_dir"),
         NGX_HTTP_LOC_CONF | NGX_HTTP_SRV_CONF | NGX_CONF_TAKE1,
-        ngx_conf_set_str_slot,
+        ngx_http_set_complex_value_zero_slot,
         NGX_HTTP_LOC_CONF_OFFSET,
         offsetof(ngx_http_cgi_loc_conf_t, working_dir),
         NULL
@@ -484,8 +485,8 @@ ngx_http_cgi_child_proc(ngx_http_cgi_ctx_t *ctx,
         exec_path = buf;
     }
 
-    if (ctx->conf->working_dir.len) {
-        if (chdir((char *)ctx->conf->working_dir.data) == -1) {
+    if (ctx->working_dir.len) {
+        if (chdir((char *)ctx->working_dir.data) == -1) {
             pctx->spawning_errop = "change working dir";
             pctx->spawning_errno = errno;
             return 1;
@@ -2027,6 +2028,14 @@ ngx_http_cgi_handler_real(ngx_http_cgi_ctx_t *ctx) {
         goto error;
     }
 
+    if (ctx->conf->working_dir) {
+        rc = ngx_http_complex_value(
+            ctx->r, ctx->conf->working_dir, &ctx->working_dir);
+        if (rc != NGX_OK) {
+            goto error;
+        }
+    }
+
     rc = ngx_http_cgi_spawn_child_process(ctx);
     if (rc != NGX_OK) {
         goto error;
@@ -2622,7 +2631,7 @@ ngx_http_cgi_create_loc_conf(ngx_conf_t *cf)
     }
 
     conf->enabled = NGX_CONF_UNSET;
-    // conf->working_dir is initialized by ngx_pcalloc
+    conf->working_dir = NGX_CONF_UNSET_PTR;
     // conf->path is initialized by ngx_pcalloc
     conf->strict_mode = NGX_CONF_UNSET;
     conf->interpreter = NGX_CONF_UNSET_PTR;
@@ -2645,7 +2654,7 @@ ngx_http_cgi_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
         conf->enabled = prev->enabled;
         conf->script = prev->script;
     }
-    ngx_conf_merge_str_value(conf->working_dir, prev->working_dir, "");
+    ngx_conf_merge_ptr_value(conf->working_dir, prev->working_dir, NULL);
     ngx_conf_merge_str_value(conf->path, prev->path,
             "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
     ngx_conf_merge_value(conf->strict_mode, prev->strict_mode, 1);

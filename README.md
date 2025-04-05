@@ -381,6 +381,9 @@ This option doesn't change the way to find interpreter or script (if they are
 specified with related path, they are always related to nginx' working
 directory).
 
+This option can contain nginx variable. Althrough I don't know what use this is.
+Maybe you can setup different working dir for different server_name here.
+
 Default: empty
 
 #### `cgi_path <PATH>`
