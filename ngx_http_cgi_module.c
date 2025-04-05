@@ -37,7 +37,7 @@ static const char *_ngx_http_cgi_hopbyhop_hdrs[] = {
 
 
 static struct sigaction * _gs_ngx_cgi_orig_sigchld_sa = NULL;
-static struct ngx_http_cgi_process_s * _gs_http_cgi_processes = NULL;
+static struct ngx_http_cgi_process_ctx_s * _gs_http_cgi_processes = NULL;
 
 
 #define _strieq(str, exp) \
@@ -62,7 +62,6 @@ typedef struct ngx_http_cgi_loc_conf_s {
     ngx_str_t                 path;
     ngx_flag_t                strict_mode;
     ngx_array_t              *interpreter;  // array<ngx_http_complex_value_t>
-    ngx_flag_t                x_only;
     ngx_fd_t                  cgi_stderr;
     ngx_int_t                 rdns;
 
@@ -89,11 +88,16 @@ typedef struct {
 } ngx_http_cgi_header_scan_t;
 
 
-typedef struct ngx_http_cgi_process_s {
-    pid_t                          pid;
+// This structure will be allocated on shared memoary, it can be accessed cross
+// process.
+typedef struct ngx_http_cgi_process_ctx_s {
+    pid_t                             pid;
 
-    struct ngx_http_cgi_process_s *next;
-} ngx_http_cgi_process_t;
+    ngx_int_t                         spawning_errno;
+    const char *                      spawning_err_msg;
+
+    struct ngx_http_cgi_process_ctx_s *next;
+} ngx_http_cgi_process_ctx_t;
 
 
 typedef struct ngx_http_cgi_ctx_s {
@@ -207,21 +211,6 @@ static ngx_command_t  ngx_http_cgi_commands[] = {
         NULL
     },
 
-    // Enable or disable x-only mode
-    // When this option turns on, only file with x perm will be treated as cgi
-    // script. Otherwise 403 will be returned. If this option turns off, the cgi
-    // plugin will try to execute the script no matter whther x perm exists.
-    // Note: this option only meanful if `cgi_interpreter` is set.
-    // Default: on
-    {
-        ngx_string("cgi_x_only"),
-        NGX_HTTP_LOC_CONF | NGX_HTTP_SRV_CONF | NGX_CONF_FLAG,
-        ngx_conf_set_flag_slot,
-        NGX_HTTP_LOC_CONF_OFFSET,
-        offsetof(ngx_http_cgi_loc_conf_t, x_only),
-        NULL
-    },
-
     // Redirect cgi stderr to giving file
     // By default, nginx-cgi grab cgi script's stderr output and dump it to
     // nginx log. But this action is somewhat expensive, because it need to
@@ -316,8 +305,8 @@ ngx_module_t  ngx_http_cgi_module = {
 
 static void
 ngx_http_cgi_sigchld_handler(int sid, siginfo_t *sinfo, void *ucontext) {
-    ngx_http_cgi_process_t *prev = NULL;
-    ngx_http_cgi_process_t *cur = _gs_http_cgi_processes;
+    ngx_http_cgi_process_ctx_t *prev = NULL;
+    ngx_http_cgi_process_ctx_t *cur = _gs_http_cgi_processes;
 
     for (; cur != NULL; prev = cur, cur = prev->next) {
         if (cur->pid == sinfo->si_pid) {
@@ -338,7 +327,7 @@ ngx_http_cgi_sigchld_handler(int sid, siginfo_t *sinfo, void *ucontext) {
             ngx_log_error(NGX_LOG_INFO, ngx_cycle->log, 0,
                 "cgi process %d quit with status %d",
                 cur->pid, WEXITSTATUS(wstatus));
-            free(cur);
+            munmap(cur, sizeof(*cur));
         }
     } else {
         // forward signal to orig handler
@@ -379,27 +368,24 @@ ngx_http_cgi_init_process(ngx_cycle_t *cycle) {
 
 
 static void
+_quick_close_fd(int *pfd) {
+    if (pfd && *pfd >= 0) {
+        close(*pfd);
+        *pfd = -1;
+    }
+}
+
+
+static void
 ngx_http_cgi_ctx_cleanup(void *data) {
     ngx_http_cgi_ctx_t *ctx = data;
 
-    if (ctx->pipe_stdin[0] != -1) {
-        close(ctx->pipe_stdin[0]);
-    }
-    if (ctx->pipe_stdin[1] != -1) {
-        close(ctx->pipe_stdin[1]);
-    }
-    if (ctx->pipe_stdout[0] != -1) {
-        close(ctx->pipe_stdout[0]);
-    }
-    if (ctx->pipe_stdout[1] != -1) {
-        close(ctx->pipe_stdout[1]);
-    }
-    if (ctx->pipe_stderr[0] != -1) {
-        close(ctx->pipe_stderr[0]);
-    }
-    if (ctx->pipe_stderr[1] != -1) {
-        close(ctx->pipe_stderr[1]);
-    }
+    _quick_close_fd(&ctx->pipe_stdin[PIPE_READ_END]);
+    _quick_close_fd(&ctx->pipe_stdin[PIPE_WRITE_END]);
+    _quick_close_fd(&ctx->pipe_stdout[PIPE_READ_END]);
+    _quick_close_fd(&ctx->pipe_stdout[PIPE_WRITE_END]);
+    _quick_close_fd(&ctx->pipe_stderr[PIPE_READ_END]);
+    _quick_close_fd(&ctx->pipe_stderr[PIPE_WRITE_END]);
 
     if (ctx->c_stdin) {
         ngx_close_connection(ctx->c_stdin);
@@ -454,7 +440,9 @@ static void closefrom(int lowfd) {
 
 
 static int
-ngx_http_cgi_child_proc(ngx_http_cgi_ctx_t *ctx) {
+ngx_http_cgi_child_proc(ngx_http_cgi_ctx_t *ctx,
+                        ngx_http_cgi_process_ctx_t *pctx)
+{
     char **cmd = ctx->cmd->elts;
     char **env = ctx->env->elts;
 
@@ -481,6 +469,8 @@ ngx_http_cgi_child_proc(ngx_http_cgi_ctx_t *ctx) {
 
     // Do not use `p` version here, to avoid security issue
     if (execve(cmd[0], cmd, env) == -1) {
+        pctx->spawning_errno = errno;
+        pctx->spawning_err_msg = "execve";
         // 126 means cannot executing binary in POSIX system.
         return 126;
     }
@@ -575,13 +565,6 @@ ngx_http_cgi_locate_script(ngx_http_cgi_ctx_t *ctx) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                 "run cgi \"%V\" failed, not regular file", &ctx->script);
         return NGX_HTTP_NOT_FOUND;
-    }
-
-    if (ctx->conf->x_only && access((char*)ctx->script.data, X_OK) != 0) {
-        // no execute permission
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                "run cgi \"%V\" failed, no x permission", &ctx->script);
-        return NGX_HTTP_FORBIDDEN;
     }
 
     return NGX_OK;
@@ -1079,9 +1062,9 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
 static ngx_int_t
 ngx_http_cgi_spawn_child_process(ngx_http_cgi_ctx_t *ctx) {
     pid_t                            child_pid = 0;
-    ngx_int_t                        rc = NGX_OK;
+    volatile ngx_int_t               rc = NGX_OK;
     ngx_http_request_t              *r = ctx->r;
-    ngx_http_cgi_process_t          *pinfo = NULL;
+    ngx_http_cgi_process_ctx_t      *pctx = NULL;
 
     // don't create stdin pipe if there's no body to save connections
     if ((r->request_body && r->request_body->bufs) || r->reading_body) {
@@ -1089,33 +1072,32 @@ ngx_http_cgi_spawn_child_process(ngx_http_cgi_ctx_t *ctx) {
             ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
                     "pipe");
             rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-            goto error;
+            goto done;
         }
     }
 
     if (pipe(ctx->pipe_stdout) == -1) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno, "pipe");
         rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-        goto error;
+        goto done;
     }
 
     if (ctx->conf->cgi_stderr == CGI_STDERR_PIPE) {
         if (pipe(ctx->pipe_stderr) == -1) {
             ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno, "pipe");
             rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-            goto error;
+            goto done;
         }
     }
 
-    // prepare pinfo before vfork
-    pinfo = malloc(sizeof(*pinfo));
-    if (!pinfo) {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
-                      "malloc failed");
+    pctx = mmap(NULL, sizeof(*pctx),
+                PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    if (!pctx) {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno, "mmap");
         rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-        goto error;
+        goto done;
     }
-    ngx_memzero(pinfo, sizeof(*pinfo));
+    ngx_memzero(pctx, sizeof(*pctx));
 
     // core flow
     {
@@ -1130,40 +1112,56 @@ ngx_http_cgi_spawn_child_process(ngx_http_cgi_ctx_t *ctx) {
         if (child_pid == -1) {
             sigprocmask(SIG_SETMASK, &old_ss, NULL);
             ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
-                        "vfork failed");
+                        "vfork");
             rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-            free(pinfo);
-            goto error;
+            munmap(pctx, sizeof(*pctx));
+            goto done;
         } else if (child_pid == 0) {
             // child process
-            _exit(ngx_http_cgi_child_proc(ctx));
+            _exit(ngx_http_cgi_child_proc(ctx, pctx));
         } else {
-            // insert new pid to the chain
-            pinfo->pid = child_pid;
-            pinfo->next = _gs_http_cgi_processes;
-            _gs_http_cgi_processes = pinfo;
+            if (pctx->spawning_errno != 0) {
+                ngx_log_error(NGX_LOG_ERR, r->connection->log,
+                    pctx->spawning_errno, pctx->spawning_err_msg);
 
-            ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+                if (pctx->spawning_errno == EACCES) {
+                    rc = NGX_HTTP_FORBIDDEN;
+                } else if (pctx->spawning_errno == ENOENT) {
+                    rc = NGX_HTTP_NOT_FOUND;
+                } else {
+                    rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+                }
+            } else {
+                // succeeded spawning cgi process
+                // insert new pid to the chain
+                pctx->pid = child_pid;
+                pctx->next = _gs_http_cgi_processes;
+                _gs_http_cgi_processes = pctx;
+
+                ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
                     "spawned cgi process: %d", child_pid);
+            }
 
             sigprocmask(SIG_SETMASK, &old_ss, NULL);
         }
     }
 
-    if (ctx->pipe_stdin[PIPE_READ_END] != -1) {
-        close(ctx->pipe_stdin[PIPE_READ_END]);
-        ctx->pipe_stdin[PIPE_READ_END] = -1;
-    }
-    if (ctx->pipe_stdout[PIPE_WRITE_END] != -1) {
-        close(ctx->pipe_stdout[PIPE_WRITE_END]);
-        ctx->pipe_stdout[PIPE_WRITE_END] = -1;
-    }
-    if (ctx->pipe_stderr[PIPE_WRITE_END] != -1) {
-        close(ctx->pipe_stderr[PIPE_WRITE_END]);
-        ctx->pipe_stderr[PIPE_WRITE_END] = -1;
+done:
+    if (rc == NGX_OK) {
+        // close unused pipe ends
+        _quick_close_fd(&ctx->pipe_stdin[PIPE_READ_END]);
+        _quick_close_fd(&ctx->pipe_stdout[PIPE_WRITE_END]);
+        _quick_close_fd(&ctx->pipe_stderr[PIPE_WRITE_END]);
+    } else {
+        // close all pipe ends
+        _quick_close_fd(&ctx->pipe_stdin[PIPE_READ_END]);
+        _quick_close_fd(&ctx->pipe_stdin[PIPE_WRITE_END]);
+        _quick_close_fd(&ctx->pipe_stdout[PIPE_READ_END]);
+        _quick_close_fd(&ctx->pipe_stdout[PIPE_WRITE_END]);
+        _quick_close_fd(&ctx->pipe_stderr[PIPE_READ_END]);
+        _quick_close_fd(&ctx->pipe_stderr[PIPE_WRITE_END]);
     }
 
-error:
     return rc;
 }
 
@@ -2580,7 +2578,6 @@ ngx_http_cgi_create_loc_conf(ngx_conf_t *cf)
     // conf->path is initialized by ngx_pcalloc
     conf->strict_mode = NGX_CONF_UNSET;
     conf->interpreter = NGX_CONF_UNSET_PTR;
-    conf->x_only = NGX_CONF_UNSET;
     conf->cgi_stderr = CGI_STDERR_UNSET;
     conf->rdns = NGX_CONF_UNSET;
     conf->ext_vars = NULL;
@@ -2604,7 +2601,6 @@ ngx_http_cgi_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
             "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
     ngx_conf_merge_value(conf->strict_mode, prev->strict_mode, 1);
     ngx_conf_merge_ptr_value(conf->interpreter, prev->interpreter, NULL);
-    ngx_conf_merge_value(conf->x_only, prev->x_only, 1);
     ngx_conf_merge_value(conf->cgi_stderr, prev->cgi_stderr, CGI_STDERR_PIPE);
     ngx_conf_merge_value(conf->rdns, prev->rdns, CGI_RDNS_OFF);
     ngx_conf_merge_ptr_value(conf->ext_vars, prev->ext_vars, NULL);

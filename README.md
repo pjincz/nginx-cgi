@@ -378,17 +378,6 @@ This option can contains nginx variables, see
 
 Default: empty
 
-#### `cgi_x_only <on|off>`
-
-Enable or disable x-only mode.
-
-When this option turns on, only file with x perm will be treated as cgi script.
-Otherwise 403 will be returned. If this option turns off, the cgi plugin will
-try to execute the script no matter whther x perm exists. Note: this option only
-meanful if `cgi_interpreter` is set.
-
-Default: on
-
 #### `cgi_set_var <name> <value>`
 
 Add and pass extra environment variables to CGI script. The first argument of
