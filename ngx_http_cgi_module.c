@@ -324,9 +324,13 @@ ngx_http_cgi_sigchld_handler(int sid, siginfo_t *sinfo, void *ucontext) {
             } else {
                 _gs_http_cgi_processes = cur->next;
             }
-            ngx_log_error(NGX_LOG_INFO, ngx_cycle->log, 0,
-                "cgi process %d quit with status %d",
-                cur->pid, WEXITSTATUS(wstatus));
+            // when cur->spawning_errno != 0, it's a failed spawning, don't log
+            // quit message
+            if (cur->spawning_errno == 0) {
+                ngx_log_error(NGX_LOG_INFO, ngx_cycle->log, 0,
+                    "cgi process %d quit with status %d",
+                    cur->pid, WEXITSTATUS(wstatus));
+            }
             munmap(cur, sizeof(*cur));
         }
     } else {
@@ -1115,12 +1119,20 @@ ngx_http_cgi_spawn_child_process(ngx_http_cgi_ctx_t *ctx) {
                         "vfork");
             rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
             munmap(pctx, sizeof(*pctx));
-            goto done;
         } else if (child_pid == 0) {
             // child process
             _exit(ngx_http_cgi_child_proc(ctx, pctx));
         } else {
-            if (pctx->spawning_errno != 0) {
+            // SIGCHLD will be received later, no matter spawning succeed or
+            // failed. So we always need to insert pctx to the chain.
+            pctx->pid = child_pid;
+            pctx->next = _gs_http_cgi_processes;
+            _gs_http_cgi_processes = pctx;
+
+            if (pctx->spawning_errno == 0) {
+                ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+                    "spawned cgi process: %d", child_pid);
+            } else {
                 ngx_log_error(NGX_LOG_ERR, r->connection->log,
                     pctx->spawning_errno, pctx->spawning_err_msg);
 
@@ -1131,17 +1143,9 @@ ngx_http_cgi_spawn_child_process(ngx_http_cgi_ctx_t *ctx) {
                 } else {
                     rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
                 }
-            } else {
-                // succeeded spawning cgi process
-                // insert new pid to the chain
-                pctx->pid = child_pid;
-                pctx->next = _gs_http_cgi_processes;
-                _gs_http_cgi_processes = pctx;
-
-                ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
-                    "spawned cgi process: %d", child_pid);
             }
 
+            // unblock the signal
             sigprocmask(SIG_SETMASK, &old_ss, NULL);
         }
     }
