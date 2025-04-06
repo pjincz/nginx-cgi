@@ -327,21 +327,21 @@ For more information:
 
 Enable or disable cgi module on giving location block.
 
-If you specify `on` here, the plugin will work like a traditional CGI server. It
-parses the request uri first, and then locate the script under document root
-directory with request uri. After all it splits request uri to `SCRIPT_NAME` and
-`PATH_INFO`. It is good if you have an old CGI project or you want to strictly
+If you specify `on` here, the plugin will work in traditional mode. It parses
+the request uri first, and then locate the script under document root directory
+with request uri. After all it splits request uri to `SCRIPT_NAME` and
+`PATH_INFO`. This is good if you have an old CGI project or you want to strictly
 follow rfc3875.
 
 I also provided a nginx style syntax here. If you specify `cgi pass` here, the
 plugin will skip the step to locate the CGI script. It uses the the value you
 provided directly. You can references nginx variables in the second argument,
-eg: `cgi pass $document_root$uri`. The aboving example did something like
+eg: `cgi pass $document_root$uri`. The aboving example do something similar to
 rfc3875, but not equal. In this form, request uri will be assigned to
 `PATH_INFO` directly. And `SCRIPT_NAME` will be empty.
 
 The second form is really good for dynamic content generating. It gets around
-the complex and unnecessary uri rewriting.
+the complex and unnecessary uri re-writing.
 
 If you specify `off` here, the plugin will be disabled.
 
@@ -361,17 +361,25 @@ Otherwise, script will be executed directly.
 This option can contains nginx variables, see
 <https://nginx.org/en/docs/varindex.html> for more details.
 
+This option is extremely useful in a lot of senarios, for example:
+
+* run CGI scripts missing x-perm
+* do sudo before executing CGI script
+* wrap general binary as CGI script
+* filter CGI script output
+* ...
+
 Default: empty
 
 ### `cgi_working_dir <dir>`
 
 Set the working directory of CGI script.
 
-If this value is set to empty, then the CGI script will inherit nginx' working
+If this value is set to empty, CGI scripts will inherit nginx' working
 directory.
 
 If this value is set to an non-empty string, the CGI script will be launched
-with giving directory.
+with giving working directory.
 
 The action of changing working directory may failed. For example, giving
 directory doesn't exist, no perm or name too long. In this case, script will
@@ -382,13 +390,13 @@ specified with related path, they are always related to nginx' working
 directory).
 
 This option can contain nginx variable. Althrough I don't know what use this is.
-Maybe you can setup different working dir for different server_name here.
+Maybe you can setup different working dir for different server_name by this.
 
 Default: empty
 
 #### `cgi_path <PATH>`
 
-Change cgi script PATH environment variable
+Change cgi script PATH environment variable.
 
 Default: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
@@ -404,7 +412,7 @@ Default: on
 #### `cgi_set_var <name> <value>`
 
 Add and pass extra environment variables to CGI script. The first argument of
-this command is the name of final environment variable. It should contains only
+this command is the name of environment variable. It should contains only
 alphabets, numbers and underscore, and doesn't start with number. The second
 argument of this command is the value express of the var. It can contains nginx
 variables, see <https://nginx.org/en/docs/varindex.html> for more details.
@@ -414,10 +422,11 @@ one option set the same var, then the last one works. These directives are
 inherited from the previous configuration level if and only if there's no
 cgi_set_var directives defined on the current level.
 
-The option also can be used to override standard CGI vars. This may be useful in
-some case, for example hacking old CGI script or simulate standard vars that are
-not supported by this plugin now (Such as `PATH_TRANSLATED`, `REMOTE_IDENT`).
-But it's not recommanded, it may introduce confusing issues to your system.
+This option can also be used to override standard CGI vars. This may be useful
+in some case, for example hacking old CGI script or simulate standard vars that
+are not supported by this plugin now (Such as `PATH_TRANSLATED`,
+`REMOTE_IDENT`). But it's not recommanded, it may introduce confusing issues to
+your system.
 
 #### `cgi_stderr <path>`
 
@@ -434,30 +443,30 @@ all stderr output to nginx's stderr by set it as `/dev/stderr`.
 
 Enable or disable reverse dns.
 
-off: disable rdns feature.
+`off`: disable rdns feature.
 
-on: Do reverse dns before launching cgi script, and pass rdns result to cgi
-    script via `REMOTE_HOST` environment variable.
+`on`: Do reverse dns before launching cgi script, and pass rdns result to cgi
+script via `REMOTE_HOST` environment variable.
 
-double: After reverse dns, do a forward dns again to check the rdns result. if
-        result matches, pass result as `REMOTE_HOST`.
+`double`: After reverse dns, do a forward dns again to check the rdns result. if
+result matches, pass result as `REMOTE_HOST`.
 
-required: If rdns failed, 403, 503 or 500 returns to the client. Depends on the
-          failure reason of rdns.
+`required`: If rdns failed, 403, 503 or 500 returns to the client. Depends on
+the failure reason of rdns.
 
-If you turns on this option, you need to setup a `resolver` in nginx too.
+If you turns this option on, you need to setup a `resolver` in nginx too.
 Otherwise you will get an error of `no resolver defined to resolve`.
 
-author notes: do not enable this option, it will makes every request slower.
-              this feature can be easily implemented by `dig -x` or `nslookup`
-              in script when need. the only reason I impled this is just to make
-              the module fully compliant with the rfc3875 standard.
+**author notes**: do not enable this option, it will makes every request slower.
+this feature can be easily implemented by `dig -x` or `nslookup` in script. the
+only reason I implement this is just to make the module fully compliant with the
+rfc3875 standard.
 
 ### Standard Environment Variables
 
 Nginx-cgi implemented almost all rfc3875 standard variables. If they cannot
 cover all of your usage, you can add your own variable by `cgi_set_var`. Also
-you can override standard variables by `cgi_set_var` if you want.
+those variables can be overrided by `cgi_set_var` if you really want to.
 
 * `AUTH_TYPE`, `REMOTE_USER` (rfc3875 standard)
 
@@ -468,11 +477,12 @@ set to auth type (such as `Basic`) and authorized user.
 If no authorization module enabled, no matter client passes autoriazation header
 or not. Those 2 fields are not present.
 
-`Authorization` header is not visible in cgi script for security reason.
+`Authorization` header is not visible in cgi script for security reason. If you
+really want to do authorization in CGI script, try `cgi_set_var`.
 
 * `CONTENT_LENGTH`, `CONTENT_TYPE` (rfc3875 standard)
 
-Same to request header `Content-Length` and `Content-Type`.
+Same to request header's `Content-Length` and `Content-Type`.
 
 * `GATEWAY_INTERFACE` (rfc3875 standard)
 
@@ -485,21 +495,13 @@ Let's say if you have a script under `/cgi-bin/hello.sh`, and you access
 
 Then `PATH_INFO` contains the string `/somewhat`.
 
-This variable is really useful for dynamic content generating, for example you
-can write a script to index directory. Following nginx config can rewrite all
-directory access to an indexing script.
-
-```text
-location / {
-    if (-d $document_root$uri) {
-        rewrite ^ /cgi-bin/index.sh$uri last;
-    }
-}
-```
+Combination with url `rewrite` or `cgi pass`, this variable can be used for
+dynamic content generating.
 
 * `PATH_TRANSLATED` (rfc3875 standard)
 
 **Note**: this option is not implemented strictly compliant with rfc3875.
+Please avoid this, if you are writing new CGI script.
 
 This is related to `PATH_INFO`.
 
@@ -532,11 +534,10 @@ If `cgi_rdns` is on, nginx-cgi will do a reverse DNS, and find a domain matches
 `REMOTE_ADDR`. If any found, it will be set to `REMOTE_HOST`.
 
 If `cgi_rdns` is double, after the RDNS, nginx-cgi will do a forward DNS again.
-`REMOTE_HOST` will only be set if the forward DNS result contains original
+`REMOTE_HOST` will only be set if the forward DNS result matches the original
 address.
 
-Normally, don't do this. This feature can be easily implemented in script when
-need. Turning on this will make every connection slower.
+See `cgi_rdns` for more information.
 
 * `REMOTE_IDENT` (rfc3875 standard)
 
@@ -608,12 +609,12 @@ the document at <https://httpd.apache.org/docs/2.4/mod/mod_rewrite.html>.
 
 * `SCRIPT_FILENAME` (non-standard, impled by apache2)
 
-The full path to script.
+The full path to the CGI script.
 
 * `SERVER_ADDR` (non-standard, impled by apache2)
 
 Server ip address. If the server has multiple ip addresses. The value of this
-variable can be different if requests come from different interface.
+variable can be different if requests came from different interfaces.
 
 ## Tricks
 
@@ -627,7 +628,7 @@ Save following script to your cgi directory (eg, `/cgi-bin/env.sh`).
 echo 'Content-Type: text/plain'
 echo
 
-export
+printenv
 ```
 
 ### Do action with root permission
@@ -639,8 +640,8 @@ Apache has a special mod `mod_suexec` for this purpose. It can launch cgi
 scripts with other user and group. It uses a special `suexec` binary to archive
 this.
 
-But nowadays, `sudo` is really popular, and it almost pre-installed in other
-Linux distributions. I think it's a better replacement of `suexec`.
+But nowadays, `sudo` is much popular, and it almost pre-installed in all Linux
+distributions. I think it's a better replacement of `suexec`.
 
 Let's see how to do this:
 
