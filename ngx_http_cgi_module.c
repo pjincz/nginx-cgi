@@ -406,8 +406,13 @@ ngx_http_cgi_ensure_sigchld_hook() {
 }
 
 
+#if (NGX_DARWIN)
+    #define NO_VFORK 1
+#endif
+
+
 typedef struct ngx_http_cgi_creating_process_ctx_s {
-    int (*proc)(struct ngx_http_cgi_creating_process_ctx_s *);
+    int (*proc)(struct ngx_http_cgi_creating_process_ctx_s *, int);
     void *data;
 
     int pid;
@@ -443,17 +448,48 @@ ngx_http_cgi_create_process(ngx_http_cgi_creating_process_ctx_t *ctx) {
     }
     *shared_ctx = *ctx;
 
-    // do vfork
-    int child_pid = vfork();
+    // do vfork/fork
+    #if (NO_VFORK)
+        int notify_fd_pair[2];
+        if (pipe(notify_fd_pair) == -1) {
+            ctx->err_msg = "pipe";
+            ctx->err_code = ngx_errno;
+            goto done;
+        }
+
+        int child_pid = fork();
+        if (child_pid == -1) {
+            ctx->err_msg = "fork";
+            ctx->err_code = ngx_errno;
+            goto done;
+        }
+    #else
+        int child_pid = vfork();
+        if (child_pid == -1) {
+            ctx->err_msg = "vfork";
+            ctx->err_code = ngx_errno;
+            goto done;
+        }
+    #endif
+
     if (child_pid == 0) {
         // child process
         shared_ctx->pid = getpid();
-        _exit(shared_ctx->proc(shared_ctx));
+
+        #if (NO_VFORK)
+            _exit(shared_ctx->proc(shared_ctx, notify_fd_pair[1]));
+        #else
+            _exit(shared_ctx->proc(shared_ctx, -1));
+        #endif
     } else {
-        if (child_pid == -1) {
-            shared_ctx->err_msg = "vfork";
-            shared_ctx->err_code = ngx_errno;
-        }
+        #if (NO_VFORK)
+            char buf[4];
+            close(notify_fd_pair[1]);
+            // read action will be blocked until notify_fd_pair[1] closed
+            ssize_t unused = read(notify_fd_pair[0], buf, 1);
+            (void) unused;
+            close(notify_fd_pair[0]);
+        #endif
 
         // copy shared_ctx back to ctx
         *ctx = *shared_ctx;
@@ -564,7 +600,8 @@ static void closefrom(int lowfd) {
 
 
 static int
-ngx_http_cgi_child_proc(ngx_http_cgi_creating_process_ctx_t *cpctx)
+ngx_http_cgi_child_proc(
+    ngx_http_cgi_creating_process_ctx_t *cpctx, int notify_fd)
 {
     ngx_http_cgi_ctx_t *ctx = cpctx->data;
 
@@ -615,11 +652,20 @@ ngx_http_cgi_child_proc(ngx_http_cgi_creating_process_ctx_t *cpctx)
         dup2(ctx->pipe_stderr[PIPE_WRITE_END], 2);
     }
 
-    // close all fds >= 3 to prevent inherit connection from nginx
+    // close all fds >= 3 (or 4) to prevent inherit connection from nginx
     // this is important, because nginx doesn't mark all connections with
     // O_CLOEXEC. as a result, a long run cgi script will take ownship
     // of connections it closed by nginx, and causes client hangs.
-    closefrom(3);
+    if (notify_fd != -1) {
+        // notify_fd != -1, keep it, and mark as CLOEXEC, it will be closed
+        // when exec succeed, we can use this to notify parent process exec
+        // has been executed.
+        dup2(notify_fd, 3);
+        fcntl(3, F_SETFD, fcntl(3, F_GETFD) | FD_CLOEXEC);
+        closefrom(4);
+    } else {
+        closefrom(3);
+    }
 
     // Do not use `p` version here, to avoid security issue
     if (execve(exec_path, cmd, env) == -1) {
