@@ -44,6 +44,18 @@ static const char *_ngx_http_cgi_hopbyhop_hdrs[] = {
     ((nstr).len > 0 ? (nstr).data[(nstr).len - 1] : 0)
 #define _countof(a) (sizeof(a)/sizeof(a[0]))
 
+static const char * _ngx_str_to_cstr(ngx_pool_t *pool, ngx_str_t *nstr) {
+    if (nstr->data[nstr->len] == 0) {
+        return (char *)nstr->data;
+    } else {
+        char *cstr = ngx_pnalloc(pool, nstr->len + 1);
+        if (cstr) {
+            *ngx_cpymem(cstr, nstr->data, nstr->len) = 0;
+        }
+        return cstr;
+    }
+}
+
 
 ////////////////////////////////////////////////////////////////////////////////
 // types
@@ -393,10 +405,8 @@ ngx_http_cgi_ensure_sigchld_hook() {
     ngx_log_error(NGX_LOG_NOTICE, ngx_cycle->log, 0,
             "http cgi: install SIGCHLD handler");
 
-    _gs_ngx_cgi_orig_sigchld_sa = malloc(sizeof(*_gs_ngx_cgi_orig_sigchld_sa));
-    assert(_gs_ngx_cgi_orig_sigchld_sa);
-    ngx_memzero(
-        _gs_ngx_cgi_orig_sigchld_sa, sizeof(*_gs_ngx_cgi_orig_sigchld_sa));
+    static struct sigaction s_sigaction = {0};
+    _gs_ngx_cgi_orig_sigchld_sa = &s_sigaction;
 
     struct sigaction newact = {0};
     newact.sa_flags = SA_SIGINFO;
@@ -2599,7 +2609,7 @@ static char *
 ngx_http_cgi_set_stderr(ngx_conf_t *cf, ngx_command_t *cmd, void *c) {
     ngx_http_cgi_loc_conf_t  *conf = c;
     ngx_str_t                *args = cf->args->elts;
-    char                     *fpath;
+    const char               *fpath;
     ngx_pool_cleanup_t       *cln;
 
     if (conf->cgi_stderr != CGI_STDERR_UNSET) {
@@ -2610,10 +2620,13 @@ ngx_http_cgi_set_stderr(ngx_conf_t *cf, ngx_command_t *cmd, void *c) {
     if (args[1].len == 0) {
         conf->cgi_stderr = CGI_STDERR_PIPE;
     } else {
-        fpath = strndup((char*)args[1].data, args[1].len);
+        fpath = _ngx_str_to_cstr(cf->pool, &args[1]);
+        if (!fpath) {
+            return "out of memory";
+        }
+
         conf->cgi_stderr = open(fpath, O_WRONLY | O_APPEND | O_CREAT, 0644);
         if (conf->cgi_stderr == -1) {
-            free(fpath);
             return "fail to open file";
         }
 
@@ -2624,8 +2637,6 @@ ngx_http_cgi_set_stderr(ngx_conf_t *cf, ngx_command_t *cmd, void *c) {
         cln = ngx_pool_cleanup_add(cf->pool, 0);
         cln->data = (void*)(ngx_int_t)conf->cgi_stderr;
         cln->handler = ngx_http_cgi_close_fd;
-
-        free(fpath);
     }
 
     return NGX_CONF_OK;
