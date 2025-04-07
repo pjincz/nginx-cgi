@@ -41,17 +41,10 @@ Build and install:
 git clone https://github.com/pjincz/nginx-cgi
 cd nginx-cgi
 
-# install required build tool
-sudo apt install build-essential devscripts dpkg-dev fakeroot -y
+# build deb package
+./build-deb-package.sh
 
-# install build dependencies
-# if you haven't installed nginx before, this command will install nginx either
-sudo apt build-dep . -y
-
-# build with debuild
-debuild -us -uc
-
-# install build result
+# install built package
 dpkg -i ../libnginx-mod-http-cgi_*_amd64.deb 
 ```
 
@@ -132,12 +125,12 @@ Manual build guide:
 1. Checkout nginx and this plugin
 
    ```sh
-   cd an-empty-dir
+   cd <some-where-you-like>
    git clone https://github.com/nginx/nginx
    git clone https://github.com/pjincz/nginx-cgi
    ```
 
-2. Generate makefile in nginx dir
+2. Generate Makefile in nginx dir
 
    ```sh
    cd nginx
