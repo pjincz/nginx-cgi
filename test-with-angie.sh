@@ -12,7 +12,14 @@ JOBS=$(nproc 2>/dev/null \
       || echo 4)
 
 if [ ! -d "$ANGIE_DIR" ]; then
-    git clone "$ANGIE_REPO" "$ANGIE_DIR"
+    git clone --depth=1 "$ANGIE_REPO" "$ANGIE_DIR"
+fi
+
+# automatically remove bad Makefile
+if [ -f "$ANGIE_DIR/Makefile" ]; then
+    if ! grep -q "build:" "$ANGIE_DIR/Makefile"; then
+        rm "$ANGIE_DIR/Makefile"
+    fi
 fi
 
 if [ ! -f "$ANGIE_DIR/Makefile" ]; then

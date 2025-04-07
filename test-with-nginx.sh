@@ -12,7 +12,14 @@ JOBS=$(nproc 2>/dev/null \
       || echo 4)
 
 if [ ! -d "$NGINX_DIR" ]; then
-    git clone "$NGINX_REPO" "$NGINX_DIR"
+    git clone --depth=1 "$NGINX_REPO" "$NGINX_DIR"
+fi
+
+# automatically remove bad Makefile
+if [ -f "$NGINX_DIR/Makefile" ]; then
+    if ! grep -q "build:" "$NGINX_DIR/Makefile"; then
+        rm "$NGINX_DIR/Makefile"
+    fi
 fi
 
 if [ ! -f "$NGINX_DIR/Makefile" ]; then
