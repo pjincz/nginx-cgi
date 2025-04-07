@@ -497,6 +497,7 @@ ngx_http_cgi_create_process(ngx_http_cgi_creating_process_ctx_t *ctx) {
         if (ctx->pid > 0) {
             // child process is created by vfork. no matter it succeed to exec
             // or failed, we need insert the node to the chain.
+            pp->pid = ctx->pid;
             pp->log_quit = !ctx->err_msg;
             pp->next = _gs_http_cgi_processes;
             _gs_http_cgi_processes = pp;
