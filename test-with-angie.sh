@@ -11,6 +11,18 @@ JOBS=$(nproc 2>/dev/null \
       || getconf _NPROCESSORS_ONLN 2>/dev/null \
       || echo 4)
 
+CC=
+if which cc; then
+    CC=cc
+elif which clang; then
+    CC=clang
+elif which gcc; then
+    CC=gcc
+else
+    echo "no compiler found" >&2
+    exit 1
+fi
+
 if [ ! -d "$ANGIE_DIR" ]; then
     git clone --depth=1 "$ANGIE_REPO" "$ANGIE_DIR"
 fi
@@ -23,7 +35,7 @@ if [ -f "$ANGIE_DIR/Makefile" ]; then
 fi
 
 if [ ! -f "$ANGIE_DIR/Makefile" ]; then
-    (cd "$ANGIE_DIR" && ./configure --add-dynamic-module=$THIS_DIR --with-debug)
+    (cd "$ANGIE_DIR" && ./configure --add-dynamic-module="$THIS_DIR" --with-cc="$CC" --with-debug)
 fi
 
 (cd "$ANGIE_DIR" && make -j "$JOBS")

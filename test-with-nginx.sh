@@ -11,6 +11,18 @@ JOBS=$(nproc 2>/dev/null \
       || getconf _NPROCESSORS_ONLN 2>/dev/null \
       || echo 4)
 
+CC=
+if which cc; then
+    CC=cc
+elif which clang; then
+    CC=clang
+elif which gcc; then
+    CC=gcc
+else
+    echo "no compiler found" >&2
+    exit 1
+fi
+
 if [ ! -d "$NGINX_DIR" ]; then
     git clone --depth=1 "$NGINX_REPO" "$NGINX_DIR"
 fi
@@ -23,7 +35,7 @@ if [ -f "$NGINX_DIR/Makefile" ]; then
 fi
 
 if [ ! -f "$NGINX_DIR/Makefile" ]; then
-    (cd "$NGINX_DIR" && ./auto/configure --add-dynamic-module=$THIS_DIR --with-debug)
+    (cd "$NGINX_DIR" && ./auto/configure --add-dynamic-module="$THIS_DIR" --with-cc="$CC" --with-debug)
 fi
 
 (cd "$NGINX_DIR" && make -j "$JOBS")
