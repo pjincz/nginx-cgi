@@ -369,7 +369,7 @@ ngx_http_cgi_sigchld_handler(int sid, siginfo_t *sinfo, void *ucontext) {
                     "cgi process %d quit with status %d",
                     cur->pid, WEXITSTATUS(wstatus));
             }
-            munmap(cur, sizeof(*cur));
+            free(cur);
         }
     } else {
         // forward signal to orig handler
