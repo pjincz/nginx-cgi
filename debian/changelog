@@ -1,4 +1,10 @@
-nginx-cgi (0.11) stable; urgency=medium
+nginx-cgi (0.11.1) stable; urgency=high
+
+  * Fix a serious issue in 0.11: cgi module turned on by default
+
+ -- Chizhong Jin <pjincz@gmail.com>  Wed, 09 Apr 2025 05:01:12 +0800
+
+nginx-cgi (0.11) deprecated; urgency=medium
 
   * Added `cgi pass` feature
   * Added `cgi_working_dir` option
