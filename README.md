@@ -706,6 +706,49 @@ sudo /usr/sbin/poweroff
 www-data ALL=(ALL) NOPASSWD: /usr/sbin/poweroff
 ```
 
+### Spawn long-run background process in CGI script
+
+You may want to spawn a long-run background process in your CGI script. That's
+totally okay.
+
+But you may face a problem: http connection hangs.
+
+That's not an issue, it's by desgin.
+
+The root reason of this is: life cycle of CGI is driving by pipe's life cycle,
+not process's life cycle.
+
+If you create a background process, and inherit the stdout, nginx-cgi will
+consider the CGI is still not finished, there will be more output, and the
+connection hangs.
+
+It's really easier to fix this, just create the process without inheriting CGI
+script's stdout, for example:
+
+```sh
+child.sh </dev/null >/dev/null 2>&1 &
+
+# or
+child.sh </dev/null >log.txt 2>&1 &
+```
+
+If you fully understand the life cycle. You can even do more crazy: Just close
+or redirect CGI script's IO to somewhere else. nginx-cgi will consider the CGI
+request is done. And you can use the CGi process for background purpose. Here's
+an example:
+
+```sh
+exec </dev/null >/dev/null 2>&1
+
+# continue to do whatever you like.
+```
+
+This design may also causes something unexpected when you want to kill a CGI
+process. Residual child process of CGI process may causes http request hanging.
+In this case, you should kill the whole CGI process group rather than just the
+CGI process. For example, if you have a CGI process with pid 1234. Do `kill --
+-1234` instead of `kill 1234`. See manpage of kill for more details.
+
 ## Known Issues
 
 ### `PATH_TRANSLATED` impl not accurate

@@ -616,12 +616,20 @@ ngx_http_cgi_child_proc(
 {
     ngx_http_cgi_ctx_t *ctx = cpctx->data;
 
+    // each CGI process leads a process group
+    if (setpgid(0, 0) == -1) {
+        cpctx->err_msg = "create process group";
+        cpctx->err_code = errno;
+        return 1;
+    }
+
     char **cmd = ctx->cmd->elts;
     char **env = ctx->env->elts;
 
     char buf[PATH_MAX];
     char *exec_path = cmd[0];
 
+    // if comming binary is related path, convert it to abs path
     if (cmd[0][0] != '/') {
         if (getcwd(buf, sizeof(buf)) == NULL) {
             cpctx->err_msg = "get current working dir";
@@ -640,6 +648,7 @@ ngx_http_cgi_child_proc(
         exec_path = buf;
     }
 
+    // do chdir if wanted
     if (ctx->working_dir.len) {
         if (chdir((char *)ctx->working_dir.data) == -1) {
             cpctx->err_msg = "change working dir";
@@ -648,6 +657,7 @@ ngx_http_cgi_child_proc(
         }
     }
 
+    // remap stdin, stdout and stderr
     // if there's no body, pipe_stdin will not created for saving fd
     if (ctx->pipe_stdin[PIPE_READ_END] != -1) {
         dup2(ctx->pipe_stdin[PIPE_READ_END], 0);
@@ -678,13 +688,14 @@ ngx_http_cgi_child_proc(
         closefrom(3);
     }
 
-    // Do not use `p` version here, to avoid security issue
+    // exec to final binary
     if (execve(exec_path, cmd, env) == -1) {
         cpctx->err_msg = "exec";
         cpctx->err_code = errno;
         // 126 means cannot executing binary in POSIX system.
         return 126;
     }
+
     return 0;
 }
 
@@ -1271,7 +1282,7 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
 
 
 static ngx_int_t
-ngx_http_cgi_spawn_child_process(ngx_http_cgi_ctx_t *ctx) {
+ngx_http_cgi_spawn_cgi_process(ngx_http_cgi_ctx_t *ctx) {
     ngx_int_t           rc = NGX_OK;
     ngx_http_request_t *r = ctx->r;
 
@@ -2163,7 +2174,7 @@ ngx_http_cgi_handler_real(ngx_http_cgi_ctx_t *ctx) {
         }
     }
 
-    rc = ngx_http_cgi_spawn_child_process(ctx);
+    rc = ngx_http_cgi_spawn_cgi_process(ctx);
     if (rc != NGX_OK) {
         goto error;
     }
