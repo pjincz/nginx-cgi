@@ -144,7 +144,6 @@ typedef struct ngx_http_cgi_ctx_s {
     ngx_buf_t                      header_buf;
     ngx_http_cgi_header_scan_t     header_scan;
     ngx_flag_t                     header_ready;
-    ngx_flag_t                     header_sent;
 
     ngx_flag_t                     has_body;
     ngx_chain_t                   *cache;  // body sending cache
@@ -1966,7 +1965,7 @@ ngx_http_cgi_flush(ngx_http_cgi_ctx_t *ctx, ngx_flag_t eof) {
         return NGX_OK;
     }
 
-    if (!ctx->header_sent) {
+    if (!ctx->r->header_sent) {
         if (!ctx->header_ready) {
             // header is not ready, the cgi output is malformed
             ngx_log_error(NGX_LOG_ERR, ctx->r->connection->log, 0,
@@ -1987,7 +1986,6 @@ ngx_http_cgi_flush(ngx_http_cgi_ctx_t *ctx, ngx_flag_t eof) {
         if (rc == NGX_ERROR || rc > NGX_OK) {
             return rc;
         }
-        ctx->header_sent = 1;
     }
 
     if (ctx->has_body && !ctx->cache && eof) {
@@ -2019,7 +2017,7 @@ ngx_http_cgi_flush(ngx_http_cgi_ctx_t *ctx, ngx_flag_t eof) {
 
 static void
 ngx_http_cgi_terminate_request(ngx_http_cgi_ctx_t *ctx, int status) {
-    if (!ctx->header_sent) {
+    if (!ctx->r->header_sent) {
         int rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
         // 126 and 127 have special meaning in POSIX shell
         if (status == 127) {
