@@ -1,3 +1,15 @@
+nginx-cgi (0.11) stable; urgency=medium
+
+  * Added `cgi pass` feature
+  * Added `cgi_working_dir` option
+  * Removed `cgi_x_only` option
+  * Allow cgi options in server config
+  * Allow nginx variables be referenced in cgi_interpreter
+  * Changed the way to merge custom vars
+  * Fixup: REQUEST_URI contains query string
+
+ -- Chizhong Jin <pjincz@gmail.com>  Tue, 08 Apr 2025 08:04:42 +0800
+
 nginx-cgi (0.10) unstable; urgency=medium
 
   * Fixed `closefrom` missing on old Linux system

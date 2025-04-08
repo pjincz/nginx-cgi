@@ -3,13 +3,13 @@
 Brings CGI support to [Nginx](https://github.com/nginx/nginx) and
 [Angie](https://github.com/webserver-llc/angie) webserver.
 
-| OS      | Tested with                                  | Nginx  | Angie |
-| ------- | -------------------------------------------- | ------ | ----- |
-| Linux   | Ubuntu 24.04, Ubuntu 20.04 and Debian 12     | okay   | okay  |
-| Darwin  | MacOS 15.1                                   | okay   | okay  |
-| BSD     | FreeBSD 14.2 and OpenBSD 7.6                 | okay   | okay  |
-| Solaris | OmniOS r1510521                              | okay   | okay  |
-| Windows | No plan, nginx barely supports Windows       |        |       |
+| OS      | Tested with                                   | Nginx  | Angie |
+| ------- | --------------------------------------------- | ------ | ----- |
+| Linux   | AlmaLinux 9, Debian 12 and Ubuntu 24.04/20.04 | okay   | okay  |
+| Darwin  | MacOS 15.1                                    | okay   | okay  |
+| BSD     | FreeBSD 14.2 and OpenBSD 7.6                  | okay   | okay  |
+| Solaris | OmniOS r1510521                               | okay   | okay  |
+| Windows | No plan, nginx barely supports Windows        |        |       |
 
 ## Before everything
 
