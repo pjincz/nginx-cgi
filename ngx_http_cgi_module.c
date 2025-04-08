@@ -2796,9 +2796,14 @@ ngx_http_cgi_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_http_core_loc_conf_t  *clcf;
 
     if (conf->enabled == NGX_CONF_UNSET) {
-        conf->enabled = prev->enabled;
-        conf->script = prev->script;
+        if (prev->enabled != NGX_CONF_UNSET) {
+            conf->enabled = prev->enabled;
+            conf->script = prev->script;
+        } else {
+            conf->enabled = 0;
+        }
     }
+
     ngx_conf_merge_ptr_value(conf->working_dir, prev->working_dir, NULL);
     ngx_conf_merge_str_value(conf->path, prev->path,
             "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");

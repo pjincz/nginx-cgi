@@ -13,7 +13,7 @@ use Test::Nginx;
 select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
-my $t = Test::Nginx->new()->plan(47);
+my $t = Test::Nginx->new()->plan(48);
 ok($t->has_module('cgi'), 'has cgi module');
 
 ###############################################################################
@@ -209,6 +209,11 @@ like(http_get('/cgi-bin/env.sh'), qr/^REQUEST_SCHEME=http$/m, 'REQUEST_SCHEME');
 like(http_get('/cgi-bin/env.sh?asdf=1'), qr/^REQUEST_URI=\/cgi-bin\/env.sh$/m, 'REQUEST_URI');
 like(http_get('/cgi-bin/env.sh'), qr/^SCRIPT_FILENAME=$ENV{TEST_ROOT_DIR}\/cgi-bin\/env.sh$/m, 'SCRIPT_FILENAME');
 like(http_get('/cgi-bin/env.sh'), qr/^SERVER_ADDR=127.0.0.1$/m, 'SERVER_ADDR');
+
+###############################################################################
+# default disabled
+
+like(http_get('/hello.txt'), qr/welcome/i, 'hello.txt');
 
 ###############################################################################
 # misc tests
