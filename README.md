@@ -609,11 +609,11 @@ The full path to the CGI script.
 Server ip address. If the server has multiple ip addresses. The value of this
 variable can be different if requests came from different interfaces.
 
-## Tricks
+## Tricks && FAQ
 
-### Find all environment variables
+### I want to list all environment variables
 
-Save following script to your cgi directory (eg, `/cgi-bin/env.sh`).
+Put following script to your cgi directory, and curl it form your terminal:
 
 ```sh
 #!/bin/sh
@@ -624,130 +624,155 @@ echo
 printenv
 ```
 
-### Do action with root permission
+### I want root permission
 
-CGI is really good for system management. So it's inevitable to do something
-with root or other user's permission.
+Put a sudo file to `/etc/sudoers.d` and run `sudo` in your script or set
+`cgi_interpreter` as `/usr/bin/sudo`.
 
-Apache has a special mod `mod_suexec` for this purpose. It can launch cgi
-scripts with other user and group. It uses a special `suexec` binary to archive
-this.
-
-But nowadays, `sudo` is much popular, and it almost pre-installed in all Linux
-distributions. I think it's a better replacement of `suexec`.
-
-Let's see how to do this:
-
-#### Run cgi script under another user and group **NOT RECOMMANDED**
-
-This is what apache do, we can do something similar by change `cgi_interpreter`
-to `/usr/bin/sudo`:
+Here's an example of sudo config file:
 
 ```text
-location /cgi-bin {
-    cgi on;
-    cgi_interpreter /usr/bin/sudo -E -n -u www -g www;
+# allow wwww-data run /var/www/bin/my-danger-script with root account
+www-data ALL=(root) NOPASSWD: /var/www/bin/my-danger-script
+
+# allow all CGI script be luanched with sudo by nginx-cgi directly
+www-data ALL=(root) NOPASSWD: SETENV: /var/www/html/cgi-bin/*
+```
+
+### I want create a background process
+
+Just make sure not to inherit `stdout` when creating the process (ideally, avoid
+inheriting `stdin` and `stderr` as well). Here's an example write in shell.
+
+```sh
+taskid=1234
+logfile="/var/lib/my-project/$taskid"
+./long-run-task.sh "$taskid" </dev/null >"$logfile" 2>&1 &
+```
+
+Or if you are familiar with pipe operation, just close `stdout` (also, it's
+better to close `stdin` and `stderr` as well), http request will finished
+immediently. And you can use the process as background process.
+
+```sh
+exec </dev/null >somewhere 2>&1
+
+# now http response is done, do what every you like
+sleep 9999
+```
+
+
+### My http request hangs
+
+As you see abvoing. In CGI world, http request's lifecycle depends on pipe's
+(stdout's) lifecycle.
+
+Each child process might inherit the CGI process's pipe. If any process that
+inherited stdout remains alive, the HTTP request will never finish.
+
+This may causes confiusing, when you want a long run background or killing
+CGI process.
+
+For creating long-run process, see aboving topic.
+
+For killing CGI process, kill the whole process group rather than CGI process
+itself.
+
+```sh
+cgi_pid=...
+
+# don't do this
+# kill "$cgi_pid"
+
+# do this
+kill -- "-$cgi_pid"
+```
+
+### I want to kill my cgi script
+
+See aboving topic.
+
+### I want to generate content dynamicaly
+
+Traditionally, people use rewriting to archive this. But it's much easier here.
+You can do it with `cgi pass`. Here's an example to render markdone dynamically:
+
+```conf
+{
+    location ~ ^.*\.md$ {
+        cgi_pass /var/www/bin/cgi/render-markdown.sh;
+    }
 }
 ```
 
-`-E` is used to preserve cgi vars. And `-n` is used to indicate non-interactive
-mode. `-u` and `-g` indicate user and group. In aboving example, all script
-will be run as `www:www`.
-
-Then you need add a sudo entry to allow those scripts be executed without
-password, for example, save following line to `/etc/sudoers.d/www-data`:
-
-```text
-www-data ALL=(www:www) NOPASSWD: SETENV: /var/www/html/cgi-bin/*
-```
-
-This line indicates that: `www-data` user can run all scripts under
-`/var/www/html/cgi-bin` with `www` user `www` group without password. `SETENV`
-is required here, because we need to pass CGI environment variables to the
-script.
-
-Now you all your cgi script will be run with root user.
-
-But, this way is a bit too dangerous.
-
-#### Run cgi script with default user, grant special power when needed
-
-It's much better do run cgi script with default permission. And then grant
-special sudo permission when needed. Here's an example how to implement a CGI
-program to poweroff the machine.
-
-`/var/www/html/cgi-bin/poweroff.sh`:
-
-```bash
+```sh
 #!/bin/sh
 
-# do whatever authorization you want here
+set -e
 
-# response header and body
-echo 'Content-Type: text/plain'
+if [ ! -f "${DOCUMENT_ROOT}${PATH_INFO}" ]; then
+    echo "Status: 404"
+    echo
+    exit
+fi
+
+echo "Status: 200"
+echo "Content-Type: text/html"
 echo
-echo 'machine will be powered off in 5s'
 
-# close stdin and stdout to tell nginx-cgi there's no more input and output
-# needed, nginx-cgi will send the response to the client immediently without
-# waiting of script finish
-exec <&- >&-
-
-# add a sleep before poweroff, to let nginx have time to send response
-sleep 5
-
-# poweroff machine
-sudo /usr/sbin/poweroff
+echo "<html><body>"
+markdown "${DOCUMENT_ROOT}${PATH_INFO}"
+echo "</body></html>"
 ```
 
-`/etc/sudoers.d/www-data`:
+### I don't like suffixes in url
 
-```text
-www-data ALL=(ALL) NOPASSWD: /usr/sbin/poweroff
-```
+Way 1: Removing CGI script's suffix
 
-### Spawn long-run background process in CGI script
+Way 2: do rewriting
 
-You may want to spawn a long-run background process in your CGI script. That's
-totally okay.
+Way 3: `cgi pass`
 
-But you may face a problem: http connection hangs.
-
-That's not an issue, it's by desgin.
-
-The root reason of this is: life cycle of CGI is driving by pipe's life cycle,
-not process's life cycle.
-
-If you create a background process, and inherit the stdout, nginx-cgi will
-consider the CGI is still not finished, there will be more output, and the
-connection hangs.
-
-It's really easier to fix this, just create the process without inheriting CGI
-script's stdout, for example:
+### How can I response status other than 200
 
 ```sh
-child.sh </dev/null >/dev/null 2>&1 &
+#!/bin/sh
 
-# or
-child.sh </dev/null >log.txt 2>&1 &
+echo "Status: 404"
+echo "Content-Type: text/plain"
+echo
+
+echo "Welcome to the void"
 ```
 
-If you fully understand the life cycle. You can even do more crazy: Just close
-or redirect CGI script's IO to somewhere else. nginx-cgi will consider the CGI
-request is done. And you can use the CGi process for background purpose. Here's
-an example:
+### How can I response a redirection
 
 ```sh
-exec </dev/null >/dev/null 2>&1
+#!/bin/sh
 
-# continue to do whatever you like.
+echo "Status: 302"
+echo "Location: https://theuselessweb.com"
+echo
 ```
 
-This design may also causes something unexpected when you want to kill a CGI
-process. Residual child process of CGI process may causes http request hanging.
-In this case, you should kill the whole CGI process group rather than just the
-CGI process. For example, if you have a CGI process with pid 1234. Do `kill --
--1234` instead of `kill 1234`. See manpage of kill for more details.
+### How can I get http request body
+
+You can read the request body from `stdin`. If you're using shell, `cat` can
+quickly save request body to a file.
+
+### How can send file to client
+
+For small files, you can write file to `stdout` directly.
+
+For large files, it's much better to send a 302 response. Because CGI response
+is streaming, protocol cannot easily handle caching, chunked downloads, or
+resume support.
+
+### I want to write CGI with python, ruby, perl, C, C++...
+
+Go for it. Nginx-cgi don't care what language you use. Just grabs information
+from environment var, and read request body from `stdin`, and write output to
+`stdout`.
 
 ## Known Issues
 
