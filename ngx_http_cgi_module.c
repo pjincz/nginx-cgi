@@ -377,9 +377,15 @@ ngx_http_cgi_sigchld_handler(int sid, siginfo_t *sinfo, void *ucontext) {
                 _gs_http_cgi_processes = cur->next;
             }
             if (cur->log_quit) {
-                ngx_log_error(NGX_LOG_INFO, ngx_cycle->log, 0,
-                    "cgi process %d quit with status %d",
-                    cur->pid, WEXITSTATUS(wstatus));
+                if (WIFEXITED(wstatus)) {
+                    ngx_log_error(NGX_LOG_INFO, ngx_cycle->log, 0,
+                        "cgi process %d quits with status %d",
+                        cur->pid, WEXITSTATUS(wstatus));
+                } else if (WIFSIGNALED(wstatus)) {
+                    ngx_log_error(NGX_LOG_INFO, ngx_cycle->log, 0,
+                        "cgi process %d was killed by signal %d",
+                        cur->pid, WTERMSIG(wstatus));
+                }
             }
             free(cur);
         }
