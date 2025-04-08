@@ -104,7 +104,12 @@ typedef struct {
 
 typedef struct ngx_http_cgi_process_s {
     pid_t                          pid;
-    ngx_flag_t                     log_quit;
+
+    ngx_flag_t                     spawn_successful;
+    ngx_int_t                      refs;
+    ngx_flag_t                     sigchld_handled;
+    ngx_flag_t                     zombie_cleaned;
+    int                            wstatus;
 
     struct ngx_http_cgi_process_s *next;
 } ngx_http_cgi_process_t;
@@ -129,6 +134,8 @@ typedef struct ngx_http_cgi_ctx_s {
     pipe_pair_t                    pipe_stdin;
     pipe_pair_t                    pipe_stdout;
     pipe_pair_t                    pipe_stderr;
+
+    int                            pid;
 
     ngx_connection_t              *c_stdin;
     ngx_connection_t              *c_stdout;
@@ -355,40 +362,120 @@ static void ngx_http_cgi_unblock_sigchld() {
 }
 
 
-static void
-ngx_http_cgi_sigchld_handler(int sid, siginfo_t *sinfo, void *ucontext) {
+// **invoking of this method should protected by ngx_http_cgi_block_sigchld**
+static ngx_flag_t
+_ngx_http_cgi_find_process(
+    int pid, ngx_http_cgi_process_t **pprev, ngx_http_cgi_process_t **pcur)
+{
     ngx_http_cgi_process_t *prev = NULL;
     ngx_http_cgi_process_t *cur = _gs_http_cgi_processes;
 
     for (; cur != NULL; prev = cur, cur = prev->next) {
-        if (cur->pid == sinfo->si_pid) {
-            break;
+        if (cur->pid == pid) {
+            *pprev = prev;
+            *pcur = cur;
+            return 1;
         }
     }
 
-    if (cur) {
-        int wstatus = 0;
-        pid_t pid = waitpid(cur->pid, &wstatus, WNOHANG);
-        if (pid > 0) {
-            // process finished
-            if (prev) {
-                prev->next = cur->next;
-            } else {
-                _gs_http_cgi_processes = cur->next;
+    return 0;
+}
+
+
+// **invoking of this method should protected by ngx_http_cgi_block_sigchld**
+static void
+_ngx_http_cgi_try_clean_process_node(
+    ngx_http_cgi_process_t *prev, ngx_http_cgi_process_t *cur)
+{
+    if (cur->refs > 0 || !cur->sigchld_handled || !cur->zombie_cleaned) {
+        return;
+    }
+
+    if (prev) {
+        prev->next = cur->next;
+    } else {
+        _gs_http_cgi_processes = cur->next;
+    }
+
+    free(cur);
+}
+
+
+// dereference of a process
+// returns:
+//   0-127: process exit code
+//   128-255: process killed by signal
+//   -1: process still alive
+//   -2: process not managed by nginx-cgi
+//   -999: unknown error
+static int
+ngx_http_cgi_deref_process(int pid) {
+    int status = -999;
+
+    ngx_http_cgi_block_sigchld();
+
+    ngx_http_cgi_process_t *prev = NULL;
+    ngx_http_cgi_process_t *cur = NULL;
+
+    if (_ngx_http_cgi_find_process(pid, &prev, &cur)) {
+        if (cur->refs > 0) {
+            cur->refs -= 1;
+        }
+
+        if (!cur->zombie_cleaned) {
+            if (waitpid(cur->pid, &cur->wstatus, WNOHANG) > 0) {
+                cur->zombie_cleaned = 1;
             }
-            if (cur->log_quit) {
-                if (WIFEXITED(wstatus)) {
+        }
+
+        if (cur->zombie_cleaned) {
+            if (WIFEXITED(cur->wstatus)) {
+                status = WEXITSTATUS(cur->wstatus);
+            } else if (WIFSIGNALED(cur->wstatus)) {
+                status = WTERMSIG(cur->wstatus) + 128;
+            }
+        } else {
+            status = -1;
+        }
+
+        _ngx_http_cgi_try_clean_process_node(prev, cur);
+    } else {
+        status = -2;
+    }
+
+    ngx_http_cgi_unblock_sigchld();
+    return status;
+}
+
+
+static void
+ngx_http_cgi_sigchld_handler(int sid, siginfo_t *sinfo, void *ucontext) {
+    ngx_http_cgi_process_t *prev = NULL;
+    ngx_http_cgi_process_t *cur = NULL;
+    
+    if (_ngx_http_cgi_find_process(sinfo->si_pid, &prev, &cur)) {
+        cur->sigchld_handled = 1;
+
+        if (waitpid(cur->pid, &cur->wstatus, WNOHANG) > 0) {
+            cur->zombie_cleaned = 1;
+        }
+
+        // it looks this if stmt is unnecessary here, god knows
+        if (cur->zombie_cleaned) {
+            if (cur->spawn_successful) {
+                if (WIFEXITED(cur->wstatus)) {
                     ngx_log_error(NGX_LOG_INFO, ngx_cycle->log, 0,
                         "cgi process %d quits with status %d",
-                        cur->pid, WEXITSTATUS(wstatus));
-                } else if (WIFSIGNALED(wstatus)) {
+                        cur->pid, WEXITSTATUS(cur->wstatus));
+                } else if (WIFSIGNALED(cur->wstatus)) {
                     ngx_log_error(NGX_LOG_INFO, ngx_cycle->log, 0,
                         "cgi process %d was killed by signal %d",
-                        cur->pid, WTERMSIG(wstatus));
+                        cur->pid, WTERMSIG(cur->wstatus));
                 }
             }
-            free(cur);
         }
+
+        _ngx_http_cgi_try_clean_process_node(prev, cur);
     } else {
         // forward signal to orig handler
         if (_gs_ngx_cgi_orig_sigchld_sa->sa_flags & SA_SIGINFO) {
@@ -514,13 +601,17 @@ ngx_http_cgi_create_process(ngx_http_cgi_creating_process_ctx_t *ctx) {
             // child process is created by vfork. no matter it succeed to exec
             // or failed, we need insert the node to the chain.
             pp->pid = ctx->pid;
-            pp->log_quit = !ctx->err_msg;
+            pp->spawn_successful = !ctx->err_msg;
             pp->next = _gs_http_cgi_processes;
             _gs_http_cgi_processes = pp;
             pp_on_chain = 1;
 
             // ensure hook is installed
             ngx_http_cgi_ensure_sigchld_hook();
+        }
+
+        if (pp->spawn_successful) {
+            pp->refs += 1;
         }
     }
 
@@ -1325,6 +1416,7 @@ ngx_http_cgi_spawn_cgi_process(ngx_http_cgi_ctx_t *ctx) {
     if (cpctx.err_code == 0) {
         ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
             "spawned cgi process: %d", cpctx.pid);
+        ctx->pid = cpctx.pid;
     } else {
         ngx_log_error(NGX_LOG_INFO, r->connection->log, cpctx.err_code,
             "failed to spawn CGI process: %s", cpctx.err_msg);
@@ -1926,6 +2018,39 @@ ngx_http_cgi_flush(ngx_http_cgi_ctx_t *ctx, ngx_flag_t eof) {
 
 
 static void
+ngx_http_cgi_terminate_request(ngx_http_cgi_ctx_t *ctx, int status) {
+    if (!ctx->header_sent) {
+        int rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+        // 126 and 127 have special meaning in POSIX shell
+        if (status == 127) {
+            rc = NGX_HTTP_NOT_FOUND;
+        } else if (status == 126) {
+            rc = NGX_HTTP_FORBIDDEN;
+        }
+        ngx_http_finalize_request(ctx->r, rc);
+    } else {
+        // For http 1.1 and above, protocol has way to describe errors in middle
+        // of streaming.
+        // But for http 1.0, we can only causes a hard TCP RST here.
+        if (ctx->r->http_version == NGX_HTTP_VERSION_10) {
+            struct linger linger;
+            linger.l_onoff = 1;
+            linger.l_linger = 0;
+            if (setsockopt(ctx->r->connection->fd, SOL_SOCKET, SO_LINGER,
+                    (void *) &linger, sizeof(struct linger)) == -1)
+            {
+                ngx_log_error(NGX_LOG_ALERT, ctx->r->connection->log, ngx_errno,
+                            "setsockopt(SO_LINGER) failed");
+            }
+        }
+        ngx_http_finalize_request(ctx->r, NGX_ERROR);
+    }
+
+    ngx_http_run_posted_requests(ctx->r->connection);
+}
+
+
+static void
 ngx_http_cgi_stdin_handler(ngx_event_t *ev) {
     ngx_connection_t   *c = ev->data;
     ngx_http_cgi_ctx_t *ctx = c->data;
@@ -2094,7 +2219,18 @@ ngx_http_cgi_stdout_handler(ngx_event_t *ev) {
     } else {
         ngx_close_connection(ctx->c_stdout);
         ctx->c_stdout = NULL;
-        ngx_http_finalize_request(r, ngx_http_cgi_flush(ctx, 1));
+
+        int status = ngx_http_cgi_deref_process(ctx->pid);
+        if (status == -1 || status == 0) {
+            // process manually closed stdout or exited with code 0
+            ngx_http_finalize_request(r, ngx_http_cgi_flush(ctx, 1));
+        } else if (status > 0) {
+            // process exited abnormal
+            ngx_http_cgi_terminate_request(ctx, status);
+        } else {
+            // should not happen
+            ngx_http_cgi_terminate_request(ctx, status);
+        }
     }
 
     return;
