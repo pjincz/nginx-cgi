@@ -364,7 +364,7 @@ This option is extremely useful in a lot of senarios, for example:
 
 Default: empty
 
-### `cgi_working_dir <dir>`
+#### `cgi_working_dir <dir>`
 
 Set the working directory of CGI script.
 
@@ -386,6 +386,18 @@ This option can contain nginx variable. Althrough I don't know what use this is.
 Maybe you can setup different working dir for different server_name by this.
 
 Default: empty
+
+#### `cgi_body_only <on|off>`
+
+A standard CGI script should output two parts: header and body. And an empty
+line to split those two parts.
+
+If you want to simply run a normal program as CGI program. You can turn this on.
+
+Once this option is enabled, all outout will be treated as response body, and be
+sent to the client.
+
+Default: off
 
 #### `cgi_path <PATH>`
 
@@ -760,7 +772,7 @@ echo
 You can read the request body from `stdin`. If you're using shell, `cat` can
 quickly save request body to a file.
 
-### How can send file to client
+### How can send file to the client
 
 For small files, you can write file to `stdout` directly.
 

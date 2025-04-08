@@ -74,6 +74,7 @@ typedef struct ngx_http_cgi_loc_conf_s {
     ngx_http_complex_value_t *script;
     ngx_array_t              *interpreter;  // array<ngx_http_complex_value_t>
     ngx_http_complex_value_t *working_dir;
+    ngx_flag_t                body_only;
     ngx_str_t                 path;
     ngx_flag_t                strict_mode;
     ngx_fd_t                  cgi_stderr;
@@ -216,6 +217,16 @@ static ngx_command_t  ngx_http_cgi_commands[] = {
         ngx_http_set_complex_value_zero_slot,
         NGX_HTTP_LOC_CONF_OFFSET,
         offsetof(ngx_http_cgi_loc_conf_t, working_dir),
+        NULL
+    },
+
+    // Body only mode
+    {
+        ngx_string("cgi_body_only"),
+        NGX_HTTP_LOC_CONF | NGX_HTTP_SRV_CONF | NGX_CONF_FLAG,
+        ngx_conf_set_flag_slot,
+        NGX_HTTP_LOC_CONF_OFFSET,
+        offsetof(ngx_http_cgi_loc_conf_t, body_only),
         NULL
     },
 
@@ -2604,6 +2615,11 @@ ngx_http_cgi_handler_init(ngx_http_request_t *r)
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
+    if (ctx->conf->body_only) {
+        r->headers_out.status = NGX_HTTP_OK;
+        ctx->header_ready = 1;
+    }
+
     if (ctx->conf->script) {
         rc = ngx_http_complex_value(ctx->r, ctx->conf->script, &ctx->script);
         if (rc == NGX_OK) {
@@ -2911,6 +2927,7 @@ ngx_http_cgi_create_loc_conf(ngx_conf_t *cf)
 
     conf->enabled = NGX_CONF_UNSET;
     conf->working_dir = NGX_CONF_UNSET_PTR;
+    conf->body_only = NGX_CONF_UNSET;
     // conf->path is initialized by ngx_pcalloc
     conf->strict_mode = NGX_CONF_UNSET;
     conf->interpreter = NGX_CONF_UNSET_PTR;
@@ -2939,6 +2956,7 @@ ngx_http_cgi_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     }
 
     ngx_conf_merge_ptr_value(conf->working_dir, prev->working_dir, NULL);
+    ngx_conf_merge_value(conf->body_only, prev->body_only, 0);
     ngx_conf_merge_str_value(conf->path, prev->path,
             "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
     ngx_conf_merge_value(conf->strict_mode, prev->strict_mode, 1);
