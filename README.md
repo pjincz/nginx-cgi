@@ -467,6 +467,22 @@ this feature can be easily implemented by `dig -x` or `nslookup` in script. the
 only reason I implement this is just to make the module fully compliant with the
 rfc3875 standard.
 
+#### `cgi_timeout <t1> [t2]`
+
+Send `TERM`/`KILL` signals to the CGI process if it runs too long.
+
+If both `t1` and `t2` equal to `0`. Timeout feature is disabled.
+
+If `t1` or `t2` doesn't equal to `0`. A `TERM` or `KILL` signal will be sent to
+the process after timeout.
+
+If both `t1` and `t2` not zero. Send `TERM` at `t1` timestamp first. And send
+`KILL` again at `t1+t2` timestamp (if process still alive at that timestamp).
+
+If `t2` doesn't present, it treated as `0`.
+
+Default: 0 0
+
 ### Standard Environment Variables
 
 Nginx-cgi implemented almost all rfc3875 standard variables. If they cannot

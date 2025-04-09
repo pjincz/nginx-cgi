@@ -69,18 +69,25 @@ typedef struct {
 } ngx_http_cgi_ext_var_t;
 
 
-typedef struct ngx_http_cgi_loc_conf_s {
-    ngx_flag_t                enabled;
-    ngx_http_complex_value_t *script;
-    ngx_array_t              *interpreter;  // array<ngx_http_complex_value_t>
-    ngx_http_complex_value_t *working_dir;
-    ngx_flag_t                body_only;
-    ngx_str_t                 path;
-    ngx_flag_t                strict_mode;
-    ngx_fd_t                  cgi_stderr;
-    ngx_int_t                 rdns;
+typedef struct {
+    ngx_msec_t  t1;
+    ngx_msec_t  t2;
+} ngx_http_cgi_loc_timeout_conf_t;
 
-    ngx_array_t              *ext_vars;  // array<ngx_http_cgi_ext_var_t>
+
+typedef struct ngx_http_cgi_loc_conf_s {
+    ngx_flag_t                       enabled;
+    ngx_http_complex_value_t        *script;
+    ngx_array_t                     *interpreter;  // array<ngx_http_complex_value_t>
+    ngx_http_complex_value_t        *working_dir;
+    ngx_flag_t                       body_only;
+    ngx_str_t                        path;
+    ngx_flag_t                       strict_mode;
+    ngx_fd_t                         cgi_stderr;
+    ngx_int_t                        rdns;
+
+    ngx_array_t                     *ext_vars;  // array<ngx_http_cgi_ext_var_t>
+    ngx_http_cgi_loc_timeout_conf_t *timeout;
 } ngx_http_cgi_loc_conf_t;
 
 
@@ -149,6 +156,8 @@ typedef struct ngx_http_cgi_ctx_s {
     ngx_flag_t                     has_body;
     ngx_chain_t                   *cache;  // body sending cache
     ngx_chain_t                   *cache_tail;  // body sending cache
+
+    ngx_event_t                    timer;
 } ngx_http_cgi_ctx_t;
 
 
@@ -169,6 +178,8 @@ static char * ngx_http_cgi_set_stderr(
 static char * ngx_http_cgi_set_rdns(
     ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char * ngx_http_cgi_add_var(
+    ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+static char * ngx_http_cgi_set_timeout(
     ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 
 
@@ -307,9 +318,15 @@ static ngx_command_t  ngx_http_cgi_commands[] = {
         NULL
     },
 
-
-    // TODO: add an option to disable following symbolic link?
-    // TODO: add an option to report cgi error to client side?
+    // cgi_timeout <t1> [t2]
+    {
+        ngx_string("cgi_timeout"),
+        NGX_HTTP_LOC_CONF | NGX_HTTP_SRV_CONF | NGX_CONF_TAKE12,
+        ngx_http_cgi_set_timeout,
+        NGX_HTTP_LOC_CONF_OFFSET,
+        offsetof(ngx_http_cgi_loc_conf_t, timeout),
+        NULL
+    },
 
     ngx_null_command
 };
@@ -455,6 +472,21 @@ ngx_http_cgi_deref_process(int pid) {
 
     ngx_http_cgi_unblock_sigchld();
     return status;
+}
+
+
+static void
+ngx_http_cgi_kill_process(int pid, int sig) {
+    ngx_http_cgi_block_sigchld();
+
+    ngx_http_cgi_process_t *prev = NULL;
+    ngx_http_cgi_process_t *cur = NULL;
+
+    if (_ngx_http_cgi_find_process(pid, &prev, &cur)) {
+        kill(-cur->pid, sig);
+    }
+
+    ngx_http_cgi_unblock_sigchld();
 }
 
 
@@ -657,6 +689,10 @@ _quick_close_fd(int *pfd) {
 static void
 ngx_http_cgi_ctx_cleanup(void *data) {
     ngx_http_cgi_ctx_t *ctx = data;
+
+    if (ctx->timer.timer_set) {
+        ngx_del_timer(&ctx->timer);
+    }
 
     _quick_close_fd(&ctx->pipe_stdin[PIPE_READ_END]);
     _quick_close_fd(&ctx->pipe_stdin[PIPE_WRITE_END]);
@@ -2302,6 +2338,33 @@ ngx_http_cgi_stderr_handler(ngx_event_t *ev) {
 }
 
 
+static void
+ngx_http_cgi_timeout2_handler(ngx_event_t *ev) {
+    ngx_http_cgi_ctx_t  *ctx = ev->data;
+
+    ngx_log_error(NGX_LOG_INFO, ev->log, 0,
+        "CGI timeout, send KILL signal");
+
+    ngx_http_cgi_kill_process(ctx->pid, SIGKILL);
+}
+
+
+static void
+ngx_http_cgi_timeout_handler(ngx_event_t *ev) {
+    ngx_http_cgi_ctx_t  *ctx = ev->data;
+
+    ngx_log_error(NGX_LOG_INFO, ev->log, 0,
+        "CGI timeout, send TERM signal");
+
+    ngx_http_cgi_kill_process(ctx->pid, SIGTERM);
+
+    if (ctx->conf->timeout && ctx->conf->timeout->t2 > 0) {
+        ev->handler = ngx_http_cgi_timeout2_handler;
+        ngx_add_timer(ev, ctx->conf->timeout->t2);
+    }
+}
+
+
 void
 ngx_http_cgi_handler_real(ngx_http_cgi_ctx_t *ctx) {
     ngx_int_t                  rc;
@@ -2421,6 +2484,19 @@ ngx_http_cgi_handler_real(ngx_http_cgi_ctx_t *ctx) {
         if (ngx_handle_read_event(ctx->c_stderr->read, 0) != NGX_OK) {
             rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
             goto error;
+        }
+    }
+
+    if (ctx->conf->timeout) {
+        ctx->timer.data = ctx;
+        ctx->timer.log = ctx->r->connection->log;
+
+        if (ctx->conf->timeout->t1 > 0) {
+            ctx->timer.handler = ngx_http_cgi_timeout_handler;
+            ngx_add_timer(&ctx->timer, ctx->conf->timeout->t1);
+        } else if (ctx->conf->timeout->t2 > 0) {
+            ctx->timer.handler = ngx_http_cgi_timeout2_handler;
+            ngx_add_timer(&ctx->timer, ctx->conf->timeout->t2);
         }
     }
 
@@ -2567,7 +2643,7 @@ error:
 }
 
 
-void
+static void
 ngx_http_cgi_empty_body_handler(ngx_http_request_t *r) {
     // do nothing here
 }
@@ -2915,6 +2991,38 @@ ngx_http_cgi_add_var(ngx_conf_t *cf, ngx_command_t *cmd, void *c) {
 }
 
 
+static char *
+ngx_http_cgi_set_timeout(ngx_conf_t *cf, ngx_command_t *cmd, void *c) {
+    ngx_http_cgi_loc_conf_t            *conf = c;
+    ngx_uint_t                          narg = cf->args->nelts;
+    ngx_str_t                          *args = cf->args->elts;
+
+    if (conf->timeout != NGX_CONF_UNSET_PTR) {
+        return "is duplicated";
+    }
+
+    conf->timeout = ngx_pcalloc(cf->pool, sizeof(*conf->timeout));
+    if (!conf->timeout) {
+        return "fail to allocate memory";
+    }
+
+    if (narg > 1) {
+        conf->timeout->t1 = ngx_parse_time(&args[1], 0);
+        if (conf->timeout->t1 == (ngx_msec_t) NGX_ERROR) {
+            return "invalid value";
+        }
+    }
+    if (narg > 2) {
+        conf->timeout->t2 = ngx_parse_time(&args[2], 0);
+        if (conf->timeout->t2 == (ngx_msec_t) NGX_ERROR) {
+            return "invalid value";
+        }
+    }
+
+    return NGX_CONF_OK;
+}
+
+
 static void *
 ngx_http_cgi_create_loc_conf(ngx_conf_t *cf)
 {
@@ -2934,6 +3042,7 @@ ngx_http_cgi_create_loc_conf(ngx_conf_t *cf)
     conf->cgi_stderr = CGI_STDERR_UNSET;
     conf->rdns = NGX_CONF_UNSET;
     conf->ext_vars = NULL;
+    conf->timeout = NGX_CONF_UNSET_PTR;
 
     return conf;
 }
@@ -2964,6 +3073,7 @@ ngx_http_cgi_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_conf_merge_value(conf->cgi_stderr, prev->cgi_stderr, CGI_STDERR_PIPE);
     ngx_conf_merge_value(conf->rdns, prev->rdns, CGI_RDNS_OFF);
     ngx_conf_merge_ptr_value(conf->ext_vars, prev->ext_vars, NULL);
+    ngx_conf_merge_ptr_value(conf->timeout, prev->timeout, NULL);
 
     if (conf->enabled) {
         clcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
