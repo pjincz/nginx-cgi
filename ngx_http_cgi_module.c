@@ -2085,6 +2085,11 @@ ngx_http_cgi_terminate_request(ngx_http_cgi_ctx_t *ctx, ngx_int_t rc) {
         // use NGX_ERROR to terminate ASAP
         ngx_http_finalize_request(ctx->r, NGX_ERROR);
     }
+
+    // kill CGI process
+    if (ctx->pid > 0) {
+        ngx_http_cgi_kill_process(ctx->pid, SIGTERM);
+    }
 }
 
 
@@ -2159,14 +2164,60 @@ done:
 }
 
 
+// This function contains a lot of magic code
+// They are mainly came from ngx_http_upstream_check_broken_connection
+static ngx_flag_t
+ngx_http_cgi_is_client_disconnected(ngx_http_cgi_ctx_t *ctx) {
+    ngx_http_request_t *r = ctx->r;
+    ngx_connection_t   *c = r->connection;
+    ngx_event_t        *ev = c->read;
+
+#if (NGX_HTTP_V2)
+    if (r->stream) {
+        return 0;
+    }
+#endif
+
+#if (NGX_HTTP_V3)
+    if (c->quic) {
+        return c->write->error;
+    }
+#endif
+
+#if (NGX_HAVE_KQUEUE)
+    if (ngx_event_flags & NGX_USE_KQUEUE_EVENT) {
+        return ev->pending_eof;
+    }
+#endif
+
+#if (NGX_HAVE_EPOLLRDHUP)
+    if ((ngx_event_flags & NGX_USE_EPOLL_EVENT) && ngx_use_epoll_rdhup) {
+        return ev->pending_eof;
+    }
+#endif
+
+    char buf[1];
+    int n = recv(c->fd, buf, 1, MSG_PEEK);
+    ngx_err_t err = ngx_socket_errno;
+
+    if (n > 0) {
+        return 0;
+    } else if (n == -1 && err == NGX_EAGAIN) {
+        return 0;
+    }
+
+    return 1;
+}
+
+
 static void
-ngx_http_cgi_request_body_handler(ngx_http_request_t *r) {
+ngx_http_cgi_request_handler(ngx_http_request_t *r) {
     // async request body handler, when invoked, more data comes in
     ngx_http_cgi_ctx_t *ctx;
     ngx_int_t           rc = NGX_OK;
     
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
-                   "ngx_http_cgi_request_body_handler");
+                   "ngx_http_cgi_request_handler");
 
     ctx = ngx_http_get_module_ctx(r, ngx_http_cgi_module);
     if (ctx == NULL) {
@@ -2174,29 +2225,38 @@ ngx_http_cgi_request_body_handler(ngx_http_request_t *r) {
         goto done;
     }
 
-    rc = ngx_http_read_unbuffered_request_body(r);
-    if (rc == NGX_ERROR || rc > NGX_OK) {
-        goto done;
-    } else {
-        rc = NGX_OK;
+    if (r->reading_body) {
+        rc = ngx_http_read_unbuffered_request_body(r);
+        if (rc == NGX_ERROR || rc > NGX_OK) {
+            goto done;
+        } else {
+            rc = NGX_OK;
+        }
     }
 
-    if (ctx->c_stdin) {
-        if (ctx->c_stdin->write->ready) {
-            ngx_http_cgi_stdin_handler(ctx->c_stdin->write);
-        }
-    } else {
-        // cgi script has closed the stdin, discard remain data
-        // it's not necessary to free buffers here, but it can help to reduce
-        // memory usage during a long connection
-        while (r->request_body && r->request_body->bufs) {
-            ngx_chain_t * next = r->request_body->bufs->next;
-            if (r->request_body->bufs->buf) {
-                ngx_pfree(r->pool, r->request_body->bufs->buf);
+    // request body can come before spawing of CGI
+    if (ctx->pid > 0) {
+        if (ctx->c_stdin) {
+            if (ctx->c_stdin->write->ready) {
+                ngx_http_cgi_stdin_handler(ctx->c_stdin->write);
             }
-            ngx_pfree(r->pool, r->request_body->bufs);
-            r->request_body->bufs = next;
+        } else {
+            // cgi script has closed the stdin, discard remain data
+            // it's not necessary to free buffers here, but it can help to reduce
+            // memory usage during a long connection
+            while (r->request_body && r->request_body->bufs) {
+                ngx_chain_t * next = r->request_body->bufs->next;
+                if (r->request_body->bufs->buf) {
+                    ngx_pfree(r->pool, r->request_body->bufs->buf);
+                }
+                ngx_pfree(r->pool, r->request_body->bufs);
+                r->request_body->bufs = next;
+            }
         }
+    }
+
+    if (ngx_http_cgi_is_client_disconnected(ctx)) {
+        rc = NGX_HTTP_CLIENT_CLOSED_REQUEST;
     }
 
 done:
@@ -2457,10 +2517,6 @@ ngx_http_cgi_handler_real(ngx_http_cgi_ctx_t *ctx) {
             rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
             goto done;
         }
-
-        if (r->reading_body) {
-            r->read_event_handler = ngx_http_cgi_request_body_handler;
-        }
     }
 
     // setup stdout handler
@@ -2706,6 +2762,8 @@ ngx_http_cgi_handler_async(ngx_http_request_t *r) {
         rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
         goto done;
     }
+
+    r->read_event_handler = ngx_http_cgi_request_handler;
 
     if (ctx->conf->body_only) {
         r->headers_out.status = NGX_HTTP_OK;
