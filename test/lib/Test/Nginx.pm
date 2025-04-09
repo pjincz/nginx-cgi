@@ -400,9 +400,15 @@ sub run(;$) {
 		my @globals = $self->{_test_globals} ?
 			() : ('-g', "pid $testdir/nginx.pid; "
 			. "error_log $testdir/error.log debug;");
-		exec($NGINX, '-p', "$testdir/", '-c', 'nginx.conf',
-			'-e', 'error.log', @globals)
-			or die "Unable to exec(): $!\n";
+		if ($ENV{TEST_GDBSERVER}) {
+			exec('gdbserver', ':1234', $NGINX, '-p', "$testdir/",
+				'-c', 'nginx.conf', '-e', 'error.log', @globals)
+				or die "Unable to exec(): $!\n";
+		} else {
+			exec($NGINX, '-p', "$testdir/", '-c', 'nginx.conf',
+				'-e', 'error.log', @globals)
+				or die "Unable to exec(): $!\n";
+		}
 	}
 
 	# wait for nginx to start
