@@ -2063,15 +2063,8 @@ ngx_http_cgi_flush(ngx_http_cgi_ctx_t *ctx, ngx_flag_t eof) {
 
 
 static void
-ngx_http_cgi_terminate_request(ngx_http_cgi_ctx_t *ctx, int status) {
+ngx_http_cgi_terminate_request(ngx_http_cgi_ctx_t *ctx, ngx_int_t rc) {
     if (!ctx->r->header_sent) {
-        int rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-        // 126 and 127 have special meaning in POSIX shell
-        if (status == 127) {
-            rc = NGX_HTTP_NOT_FOUND;
-        } else if (status == 126) {
-            rc = NGX_HTTP_FORBIDDEN;
-        }
         ngx_http_finalize_request(ctx->r, rc);
     } else {
         // For http 1.1 and above, protocol has way to describe errors in middle
@@ -2088,22 +2081,22 @@ ngx_http_cgi_terminate_request(ngx_http_cgi_ctx_t *ctx, int status) {
                             "setsockopt(SO_LINGER) failed");
             }
         }
+        // if http header is already sent, detailed rc is not important anymore
+        // use NGX_ERROR to terminate ASAP
         ngx_http_finalize_request(ctx->r, NGX_ERROR);
     }
-
-    ngx_http_run_posted_requests(ctx->r->connection);
 }
 
 
 static void
 ngx_http_cgi_stdin_handler(ngx_event_t *ev) {
+    ngx_int_t           rc = NGX_OK;
     ngx_connection_t   *c = ev->data;
     ngx_http_cgi_ctx_t *ctx = c->data;
     ngx_http_request_t *r = ctx->r;
     ngx_chain_t        *chain;
     ngx_buf_t          *buf;
     ngx_flag_t          pipe_broken = 0;
-    ngx_flag_t          io_error = 0;
 
     int nwrite;
 
@@ -2136,8 +2129,8 @@ ngx_http_cgi_stdin_handler(ngx_event_t *ev) {
             } else {
                 ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
                         "stdin write");
-                io_error = 1;
-                break;
+                rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+                goto done;
             }
         }
     }
@@ -2146,8 +2139,8 @@ ngx_http_cgi_stdin_handler(ngx_event_t *ev) {
         // passed all request body
         ngx_close_connection(c);
         ctx->c_stdin = NULL;
-    } else if (pipe_broken || io_error) {
-        // cgi close stdin or io error
+    } else if (pipe_broken) {
+        // cgi close stdin, that's okay, extra body will discard
         ngx_close_connection(c);
         ctx->c_stdin = NULL;
     }
@@ -2157,6 +2150,12 @@ ngx_http_cgi_stdin_handler(ngx_event_t *ev) {
         ctx->c_stdin->write->ready = 0;
         ngx_handle_write_event(ctx->c_stdin->write, 0);
     }
+
+done:
+    if (rc != NGX_OK) {
+        ngx_http_cgi_terminate_request(ctx, rc);
+    }
+    ngx_http_run_posted_requests(r->connection);
 }
 
 
@@ -2164,7 +2163,7 @@ static void
 ngx_http_cgi_request_body_handler(ngx_http_request_t *r) {
     // async request body handler, when invoked, more data comes in
     ngx_http_cgi_ctx_t *ctx;
-    ngx_int_t           rc;
+    ngx_int_t           rc = NGX_OK;
     
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "ngx_http_cgi_request_body_handler");
@@ -2172,12 +2171,14 @@ ngx_http_cgi_request_body_handler(ngx_http_request_t *r) {
     ctx = ngx_http_get_module_ctx(r, ngx_http_cgi_module);
     if (ctx == NULL) {
         rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-        goto error;
+        goto done;
     }
 
     rc = ngx_http_read_unbuffered_request_body(r);
     if (rc == NGX_ERROR || rc > NGX_OK) {
-        goto error;
+        goto done;
+    } else {
+        rc = NGX_OK;
     }
 
     if (ctx->c_stdin) {
@@ -2197,20 +2198,21 @@ ngx_http_cgi_request_body_handler(ngx_http_request_t *r) {
             r->request_body->bufs = next;
         }
     }
-    return;
 
-error:
-    ngx_http_finalize_request(r, rc);
-    return;
+done:
+    if (rc != NGX_OK) {
+        ngx_http_cgi_terminate_request(ctx, rc);
+    }
+    ngx_http_run_posted_requests(r->connection);
 }
 
 
 static void
 ngx_http_cgi_stdout_handler(ngx_event_t *ev) {
+    ngx_int_t           rc = NGX_OK;
     ngx_connection_t   *c = ev->data;
     ngx_http_cgi_ctx_t *ctx = c->data;
     ngx_http_request_t *r = ctx->r;
-    ngx_int_t           rc = NGX_OK;
 
     u_char buf[65536];
     int total_read = 0, nread = 0;
@@ -2221,7 +2223,7 @@ ngx_http_cgi_stdout_handler(ngx_event_t *ev) {
         if (nread > 0) {
             rc = ngx_http_cgi_add_output(ctx, buf, buf + nread);
             if (rc != NGX_OK) {
-                goto error;
+                goto done;
             }
             total_read += nread;
         } else if (nread == 0) {
@@ -2237,7 +2239,7 @@ ngx_http_cgi_stdout_handler(ngx_event_t *ev) {
                 break;
             } else {
                 rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-                goto error;
+                goto done;
             }
         }
     }
@@ -2254,12 +2256,12 @@ ngx_http_cgi_stdout_handler(ngx_event_t *ev) {
     if (!eof) {
         rc = ngx_http_cgi_flush(ctx, 0);
         if (rc != NGX_OK) {
-            goto error;
+            goto done;
         }
         ctx->c_stdout->read->ready = 0;
         rc = ngx_handle_read_event(ctx->c_stdout->read, 0);
         if (rc == NGX_ERROR || rc > NGX_OK) {
-            goto error;
+            goto done;
         }
     } else {
         ngx_close_connection(ctx->c_stdout);
@@ -2268,21 +2270,34 @@ ngx_http_cgi_stdout_handler(ngx_event_t *ev) {
         int status = ngx_http_cgi_deref_process(ctx->pid);
         if (status == -1 || status == 0) {
             // process manually closed stdout or exited with code 0
-            ngx_http_finalize_request(r, ngx_http_cgi_flush(ctx, 1));
+            rc = ngx_http_cgi_flush(ctx, 1);
+            if (rc != NGX_OK) {
+                goto done;
+            }
+            ngx_http_finalize_request(r, NGX_OK);
         } else if (status > 0) {
             // process exited abnormal
-            ngx_http_cgi_terminate_request(ctx, status);
+            // 126 and 127 have special meaning in POSIX shell
+            if (status == 127) {
+                rc = NGX_HTTP_NOT_FOUND;
+            } else if (status == 126) {
+                rc = NGX_HTTP_FORBIDDEN;
+            } else {
+                rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+            }
+            goto done;
         } else {
             // should not happen
-            ngx_http_cgi_terminate_request(ctx, status);
+            rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+            goto done;
         }
     }
 
-    return;
-
-error:
-    ngx_http_finalize_request(r, rc);
-    return;
+done:
+    if (rc != NGX_OK) {
+        ngx_http_cgi_terminate_request(ctx, rc);
+    }
+    ngx_http_run_posted_requests(r->connection);
 }
 
 
@@ -2389,6 +2404,9 @@ ngx_http_cgi_pipe_connection(ngx_http_cgi_ctx_t *ctx, int pipe[2], int end)
     conn->log = conn->read->log = conn->write->log = log;
     conn->pool = ctx->r->pool;
 
+    // Note: pipe cannot read with recv(), so we cannot reuse ngx_recv code
+    // so I didn't set related fields here.
+
     conn->data = ctx;
 
     return conn;
@@ -2397,30 +2415,30 @@ ngx_http_cgi_pipe_connection(ngx_http_cgi_ctx_t *ctx, int pipe[2], int end)
 
 static void
 ngx_http_cgi_handler_real(ngx_http_cgi_ctx_t *ctx) {
-    ngx_int_t                  rc;
+    ngx_int_t                  rc = NGX_OK;
     ngx_http_request_t        *r = ctx->r;
 
     rc = ngx_http_cgi_prepare_cmd(ctx);
     if (rc != NGX_OK) {
-        goto error;
+        goto done;
     }
 
     rc = ngx_http_cgi_prepare_env(ctx);
     if (rc != NGX_OK) {
-        goto error;
+        goto done;
     }
 
     if (ctx->conf->working_dir) {
         rc = ngx_http_complex_value(
             ctx->r, ctx->conf->working_dir, &ctx->working_dir);
         if (rc != NGX_OK) {
-            goto error;
+            goto done;
         }
     }
 
     rc = ngx_http_cgi_spawn_cgi_process(ctx);
     if (rc != NGX_OK) {
-        goto error;
+        goto done;
     }
 
     // setup stdin handler
@@ -2431,13 +2449,13 @@ ngx_http_cgi_handler_real(ngx_http_cgi_ctx_t *ctx) {
             ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
                 "failed to convert stdin to ngx connection");
             rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-            goto error;
+            goto done;
         }
 
         ctx->c_stdin->write->handler = ngx_http_cgi_stdin_handler;
         if (ngx_handle_write_event(ctx->c_stdin->write, 0) != NGX_OK) {
             rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-            goto error;
+            goto done;
         }
 
         if (r->reading_body) {
@@ -2453,13 +2471,13 @@ ngx_http_cgi_handler_real(ngx_http_cgi_ctx_t *ctx) {
             ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
                 "failed to convert stdout to ngx connection");
             rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-            goto error;
+            goto done;
         }
 
         ctx->c_stdout->read->handler = ngx_http_cgi_stdout_handler;
         if (ngx_handle_read_event(ctx->c_stdout->read, 0) != NGX_OK) {
             rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-            goto error;
+            goto done;
         }
     }
 
@@ -2471,13 +2489,13 @@ ngx_http_cgi_handler_real(ngx_http_cgi_ctx_t *ctx) {
             ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
                 "failed to convert stderr to ngx connection");
             rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-            goto error;
+            goto done;
         }
 
         ctx->c_stderr->read->handler = ngx_http_cgi_stderr_handler;
         if (ngx_handle_read_event(ctx->c_stderr->read, 0) != NGX_OK) {
             rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-            goto error;
+            goto done;
         }
     }
 
@@ -2494,11 +2512,11 @@ ngx_http_cgi_handler_real(ngx_http_cgi_ctx_t *ctx) {
         }
     }
 
-    return;
-
-error:
-    ngx_http_finalize_request(r, rc);
-    return;
+done:
+    if (rc != NGX_OK) {
+        ngx_http_cgi_terminate_request(ctx, rc);
+    }
+    ngx_http_run_posted_requests(r->connection);
 }
 
 
@@ -2527,6 +2545,7 @@ _is_same_addr(const struct sockaddr *addr1, const struct sockaddr *addr2) {
 
 static void
 ngx_http_cgi_rdns_confirm_done(ngx_resolver_ctx_t *rctx) {
+    ngx_int_t                  rc = NGX_OK;
     ngx_http_cgi_ctx_t        *ctx = rctx->data;
     ngx_http_request_t        *r = ctx->r;
     ngx_flag_t                 confirmed = 0;
@@ -2557,16 +2576,23 @@ ngx_http_cgi_rdns_confirm_done(ngx_resolver_ctx_t *rctx) {
     }
 
     if (ctx->remote_host.len == 0 && (ctx->conf->rdns & CGI_RDNS_REQUIRED)) {
-        ngx_int_t rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
         if (rctx->state == NGX_RESOLVE_TIMEDOUT) {
             rc = NGX_HTTP_SERVICE_UNAVAILABLE;
         } else if (rctx->state == NGX_RESOLVE_NXDOMAIN) {
             rc = NGX_HTTP_FORBIDDEN;
+        } else {
+            rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
         }
-        ngx_http_finalize_request(r, rc);
+        goto done;
     } else {
         ngx_http_cgi_handler_real(ctx);
     }
+
+done:
+    if (rc != NGX_OK) {
+        ngx_http_cgi_terminate_request(ctx, rc);
+    }
+    ngx_http_run_posted_requests(r->connection);
 }
 
 
@@ -2580,7 +2606,7 @@ ngx_http_cgi_rdns_done(ngx_resolver_ctx_t *rctx) {
         ctx->remote_host.data = ngx_pstrdup(r->pool, &rctx->name);
         if (ctx->remote_host.data == NULL) {
             rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-            goto error;
+            goto done;
         }
         ctx->remote_host.len = rctx->name.len;
     } else {
@@ -2597,12 +2623,12 @@ ngx_http_cgi_rdns_done(ngx_resolver_ctx_t *rctx) {
             ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                 "no resolver defined to resolve");
             rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-            goto error;
+            goto done;
         } else if (rctx == NULL) {
             ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                 "ngx_resolve_start");
             rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-            goto error;
+            goto done;
         }
 
         rctx->name = ctx->remote_host;
@@ -2612,7 +2638,7 @@ ngx_http_cgi_rdns_done(ngx_resolver_ctx_t *rctx) {
 
         rc = ngx_resolve_name(rctx);
         if (rc != NGX_OK) {
-            goto error;
+            goto done;
         }
     } else if (ctx->remote_host.len == 0 &&
                (ctx->conf->rdns & CGI_RDNS_REQUIRED))
@@ -2624,28 +2650,21 @@ ngx_http_cgi_rdns_done(ngx_resolver_ctx_t *rctx) {
         } else {
             rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
         }
-        goto error;
+        goto done;
     }else {
         ngx_http_cgi_handler_real(ctx);
     }
 
-    return;
-
-error:
-    ngx_http_finalize_request(r, rc);
-    return;
+done:
+    if (rc != NGX_OK) {
+        ngx_http_cgi_terminate_request(ctx, rc);
+    }
+    ngx_http_run_posted_requests(r->connection);
 }
 
 
 static void
-ngx_http_cgi_empty_body_handler(ngx_http_request_t *r) {
-    // do nothing here
-}
-
-
-static ngx_int_t
-ngx_http_cgi_handler_init(ngx_http_request_t *r)
-{
+ngx_http_cgi_handler_async(ngx_http_request_t *r) {
     ngx_int_t            rc;
     ngx_http_cgi_ctx_t  *ctx;
     ngx_http_cleanup_t  *cln;
@@ -2657,7 +2676,8 @@ ngx_http_cgi_handler_init(ngx_http_request_t *r)
     if (ctx == NULL) {
         ctx = ngx_http_cgi_ctx_create(r->pool);
         if (ctx == NULL) {
-            return NGX_HTTP_INTERNAL_SERVER_ERROR;
+            rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+            goto done;
         }
 
         cln = ngx_pcalloc(r->pool, sizeof(*cln));
@@ -2675,14 +2695,16 @@ ngx_http_cgi_handler_init(ngx_http_request_t *r)
     if (!ctx->clcf) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
             "get ngx_http_core_module loc conf failed");
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+        goto done;
     }
 
     ctx->conf = ngx_http_get_module_loc_conf(r, ngx_http_cgi_module);
     if (ctx->conf == NULL) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
             "get ngx_http_cgi_module loc conf failed");
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+        goto done;
     }
 
     if (ctx->conf->body_only) {
@@ -2703,14 +2725,7 @@ ngx_http_cgi_handler_init(ngx_http_request_t *r)
         rc = ngx_http_cgi_locate_script(ctx);
     }
     if (rc != NGX_OK) {
-        ngx_http_discard_request_body(r);
-        return rc;
-    }
-
-    r->request_body_no_buffering = 1;
-    rc = ngx_http_read_client_request_body(r, ngx_http_cgi_empty_body_handler);
-    if (rc >= NGX_HTTP_SPECIAL_RESPONSE) {
-        return rc;
+        goto done;
     }
 
     if (ctx->conf->rdns) {
@@ -2718,11 +2733,13 @@ ngx_http_cgi_handler_init(ngx_http_request_t *r)
         if (rctx == NGX_NO_RESOLVER) {
             ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                 "no resolver defined to resolve");
-            return NGX_HTTP_INTERNAL_SERVER_ERROR;
+            rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+            goto done;
         } else if (rctx == NULL) {
             ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                 "ngx_resolve_start");
-            return NGX_HTTP_INTERNAL_SERVER_ERROR;
+            rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+            goto done;
         }
 
         rctx->addr.sockaddr = r->connection->sockaddr;
@@ -2733,12 +2750,40 @@ ngx_http_cgi_handler_init(ngx_http_request_t *r)
 
         rc = ngx_resolve_addr(rctx);
         if (rc != NGX_OK) {
-            return rc;
+            goto done;
         }
     } else {
         ngx_http_cgi_handler_real(ctx);
     }
 
+done:
+    if (rc != NGX_OK) {
+        ngx_http_cgi_terminate_request(ctx, rc);
+    }
+    ngx_http_run_posted_requests(r->connection);
+}
+
+
+static ngx_int_t
+ngx_http_cgi_handler_init(ngx_http_request_t *r)
+{
+    ngx_int_t rc;
+
+    // Combination of request_body_no_buffering=1 and
+    // ngx_http_read_client_request_body causes nginx handler into an async mode
+    // That means:
+    //   r->count increased by 1
+    //   exiting of handler won't finish request immediently
+    //   finish of request must call ngx_http_finalize_request
+    r->request_body_no_buffering = 1;
+    rc = ngx_http_read_client_request_body(r, ngx_http_cgi_handler_async);
+    if (rc >= NGX_HTTP_SPECIAL_RESPONSE) {
+        return rc;
+    }
+
+    // We must return NGX_DONE here. Otherwise, connection status will be
+    // modified. See example code:
+    // https://nginx.org/en/docs/dev/development_guide.html#http_response_body
     return NGX_DONE;
 }
 
