@@ -2365,7 +2365,37 @@ ngx_http_cgi_timeout_handler(ngx_event_t *ev) {
 }
 
 
-void
+static ngx_connection_t *
+ngx_http_cgi_pipe_connection(ngx_http_cgi_ctx_t *ctx, int pipe[2], int end)
+{
+    ngx_log_t *log = ctx->r->connection->log;
+
+    int fd = pipe[end];
+    if (ngx_nonblocking(fd) == -1) {
+        ngx_log_error(NGX_LOG_ERR, log, ngx_errno, "ngx_nonblocking");
+        return NULL;
+    }
+
+    ngx_connection_t *conn = ngx_get_connection(fd, log);
+    if (conn) {
+        // if we get conn succeed, clear fd in pipe to prevent closing twice
+        pipe[end] = -1;
+    } else {
+        ngx_log_error(NGX_LOG_ERR, log, ngx_errno, "ngx_get_connection");
+        return NULL;
+    }
+
+    conn->type = SOCK_STREAM;
+    conn->log = conn->read->log = conn->write->log = log;
+    conn->pool = ctx->r->pool;
+
+    conn->data = ctx;
+
+    return conn;
+}
+
+
+static void
 ngx_http_cgi_handler_real(ngx_http_cgi_ctx_t *ctx) {
     ngx_int_t                  rc;
     ngx_http_request_t        *r = ctx->r;
@@ -2395,28 +2425,16 @@ ngx_http_cgi_handler_real(ngx_http_cgi_ctx_t *ctx) {
 
     // setup stdin handler
     if (ctx->pipe_stdin[PIPE_WRITE_END] != -1) {
-        if (ngx_nonblocking(ctx->pipe_stdin[PIPE_WRITE_END]) == -1) {
+        ctx->c_stdin = ngx_http_cgi_pipe_connection(
+            ctx, ctx->pipe_stdin, PIPE_WRITE_END);
+        if (!ctx->c_stdin) {
             ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
-                    "ngx_nonblocking");
+                "failed to convert stdin to ngx connection");
             rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
             goto error;
         }
-        ctx->c_stdin = ngx_get_connection(ctx->pipe_stdin[PIPE_WRITE_END],
-                                          r->connection->log);
-        if (ctx->c_stdin) {
-            ctx->pipe_stdin[PIPE_WRITE_END] = -1;
-        } else {
-            ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
-                    "ngx_get_connection");
-            rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-            goto error;
-        }
-
-        ctx->c_stdin->data = ctx;
-        ctx->c_stdin->type = SOCK_STREAM;
 
         ctx->c_stdin->write->handler = ngx_http_cgi_stdin_handler;
-        ctx->c_stdin->write->log = r->connection->log;
         if (ngx_handle_write_event(ctx->c_stdin->write, 0) != NGX_OK) {
             rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
             goto error;
@@ -2429,28 +2447,16 @@ ngx_http_cgi_handler_real(ngx_http_cgi_ctx_t *ctx) {
 
     // setup stdout handler
     if (ctx->pipe_stdout[PIPE_READ_END] != -1) {
-        if (ngx_nonblocking(ctx->pipe_stdout[PIPE_READ_END]) == -1) {
+        ctx->c_stdout = ngx_http_cgi_pipe_connection(
+            ctx, ctx->pipe_stdout, PIPE_READ_END);
+        if (!ctx->c_stdout) {
             ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
-                    "fcntl");
+                "failed to convert stdout to ngx connection");
             rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
             goto error;
         }
-        ctx->c_stdout = ngx_get_connection(ctx->pipe_stdout[PIPE_READ_END],
-                                        r->connection->log);
-        if (ctx->c_stdout) {
-            ctx->pipe_stdout[PIPE_READ_END] = -1;
-        } else {
-            ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
-                    "ngx_get_connection");
-            rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-            goto error;
-        }
-
-        ctx->c_stdout->data = ctx;
-        ctx->c_stdout->type = SOCK_STREAM;
 
         ctx->c_stdout->read->handler = ngx_http_cgi_stdout_handler;
-        ctx->c_stdout->read->log = r->connection->log;
         if (ngx_handle_read_event(ctx->c_stdout->read, 0) != NGX_OK) {
             rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
             goto error;
@@ -2459,28 +2465,16 @@ ngx_http_cgi_handler_real(ngx_http_cgi_ctx_t *ctx) {
 
     // setup stderr handler
     if (ctx->pipe_stderr[PIPE_READ_END] != -1) {
-        if (ngx_nonblocking(ctx->pipe_stderr[PIPE_READ_END]) == -1) {
+        ctx->c_stderr = ngx_http_cgi_pipe_connection(
+            ctx, ctx->pipe_stderr, PIPE_READ_END);
+        if (!ctx->c_stderr) {
             ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
-                    "ngx_nonblocking");
+                "failed to convert stderr to ngx connection");
             rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
             goto error;
         }
-        ctx->c_stderr = ngx_get_connection(ctx->pipe_stderr[PIPE_READ_END],
-                                        r->connection->log);
-        if (ctx->c_stderr) {
-            ctx->pipe_stderr[PIPE_READ_END] = -1;
-        } else {
-            ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
-                    "ngx_get_connection");
-            rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-            goto error;
-        }
-
-        ctx->c_stderr->data = ctx;
-        ctx->c_stderr->type = SOCK_STREAM;
 
         ctx->c_stderr->read->handler = ngx_http_cgi_stderr_handler;
-        ctx->c_stderr->read->log = r->connection->log;
         if (ngx_handle_read_event(ctx->c_stderr->read, 0) != NGX_OK) {
             rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
             goto error;
