@@ -9,6 +9,6 @@ echo "n = $n"
 exec <&-
 
 for i in $(seq "$n"); do
-  sleep 1
+  sleep 0.1
   echo $i
 done
