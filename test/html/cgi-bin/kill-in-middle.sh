@@ -3,6 +3,6 @@
 echo "Content-Type: text/plain"
 echo
 
-echo will be killed 3 seconds later
-sleep 3
+echo will be killed 1 seconds later
+sleep 1
 kill $$

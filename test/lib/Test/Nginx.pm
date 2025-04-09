@@ -894,11 +894,16 @@ sub http_end($;%) {
 		local $/;
 		$reply = $s->getline();
 
+		if ($!{ECONNRESET}) {
+			die "TCP RST\n";
+		}
+
 		$s->close();
 
 		alarm(0);
 	};
 	alarm(0);
+
 	if ($@) {
 		log_in("died: $@");
 		return undef;
