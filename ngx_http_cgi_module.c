@@ -2057,7 +2057,7 @@ static ngx_int_t
 ngx_http_cgi_calc_content_length(ngx_http_cgi_ctx_t *ctx) {
     ngx_chain_t *it;
     ngx_int_t    len = 0;
-    
+
     for (it = ctx->cache; it; it = it->next) {
         len += it->buf->end - it->buf->start;
     }
@@ -2128,6 +2128,12 @@ ngx_http_cgi_flush(ngx_http_cgi_ctx_t *ctx, ngx_flag_t eof) {
 
 static void
 ngx_http_cgi_terminate_request(ngx_http_cgi_ctx_t *ctx, ngx_int_t rc) {
+    if (ctx->pid > 0) {
+        ngx_log_error(NGX_LOG_INFO, ctx->r->connection->log, 0,
+            "request terminated, send TERM signal to %d", ctx->pid);
+        ngx_http_cgi_kill_process(ctx->pid, SIGTERM);
+    }
+
     ngx_connection_t *conn = ctx->r->connection;
 
     ngx_flag_t terminated = 0;
@@ -2158,11 +2164,6 @@ ngx_http_cgi_terminate_request(ngx_http_cgi_ctx_t *ctx, ngx_int_t rc) {
     if (!terminated) {
         ctx->terminating_probe = NULL;
         ngx_http_run_posted_requests(conn);
-    }
-
-    // kill CGI process
-    if (ctx->pid > 0) {
-        ngx_http_cgi_kill_process(ctx->pid, SIGTERM);
     }
 }
 
@@ -2288,7 +2289,7 @@ ngx_http_cgi_request_handler(ngx_http_request_t *r) {
     // async request body handler, when invoked, more data comes in
     ngx_http_cgi_ctx_t *ctx;
     ngx_int_t           rc = NGX_OK;
-    
+
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "ngx_http_cgi_request_handler");
 
@@ -2392,6 +2393,8 @@ ngx_http_cgi_stdout_handler(ngx_event_t *ev) {
         if (nread > 0) {
             rc = ngx_http_cgi_add_output(ctx, buf, buf + nread);
             if (rc != NGX_OK) {
+                ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
+                    "ngx_http_cgi_add_output");
                 goto done;
             }
             total_read += nread;
@@ -2407,6 +2410,8 @@ ngx_http_cgi_stdout_handler(ngx_event_t *ev) {
                 // wait for more data, also do nothing here
                 break;
             } else {
+                ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
+                    "read");
                 rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
                 goto done;
             }
@@ -2425,11 +2430,15 @@ ngx_http_cgi_stdout_handler(ngx_event_t *ev) {
     if (!eof) {
         rc = ngx_http_cgi_flush(ctx, 0);
         if (rc != NGX_OK) {
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
+                "ngx_http_cgi_flush");
             goto done;
         }
         ctx->c_stdout->read->ready = 0;
         rc = ngx_handle_read_event(ctx->c_stdout->read, 0);
         if (rc == NGX_ERROR || rc > NGX_OK) {
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
+                "ngx_handle_read_event");
             goto done;
         }
     } else {
@@ -2458,6 +2467,8 @@ ngx_http_cgi_stdout_handler(ngx_event_t *ev) {
             // process exited with code 0
             rc = ngx_http_cgi_flush(ctx, 1);
             if (rc != NGX_OK) {
+                ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
+                    "ngx_http_cgi_flush");
                 goto done;
             }
             ngx_http_finalize_request(r, NGX_OK);
@@ -2471,10 +2482,14 @@ ngx_http_cgi_stdout_handler(ngx_event_t *ev) {
             } else {
                 rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
             }
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
+                "ngx_http_cgi_deref_process, status = %d", status);
             goto done;
         } else {
             // should not happen
             rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
+                "ngx_http_cgi_deref_process, status = %d", status);
             goto done;
         }
     }
@@ -2543,7 +2558,7 @@ ngx_http_cgi_timeout2_handler(ngx_event_t *ev) {
     ngx_http_cgi_ctx_t  *ctx = ev->data;
 
     ngx_log_error(NGX_LOG_INFO, ev->log, 0,
-        "CGI timeout, send KILL signal");
+        "CGI timeout, send KILL signal to %d", ctx->pid);
 
     ngx_http_cgi_kill_process(ctx->pid, SIGKILL);
 }
@@ -2554,7 +2569,7 @@ ngx_http_cgi_timeout_handler(ngx_event_t *ev) {
     ngx_http_cgi_ctx_t  *ctx = ev->data;
 
     ngx_log_error(NGX_LOG_INFO, ev->log, 0,
-        "CGI timeout, send TERM signal");
+        "CGI timeout, send TERM signal to %d", ctx->pid);
 
     ngx_http_cgi_kill_process(ctx->pid, SIGTERM);
 
