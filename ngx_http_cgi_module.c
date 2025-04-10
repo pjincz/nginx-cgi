@@ -2160,7 +2160,6 @@ done:
     if (rc != NGX_OK) {
         ngx_http_cgi_terminate_request(ctx, rc);
     }
-    ngx_http_run_posted_requests(r->connection);
 }
 
 
@@ -2263,7 +2262,6 @@ done:
     if (rc != NGX_OK) {
         ngx_http_cgi_terminate_request(ctx, rc);
     }
-    ngx_http_run_posted_requests(r->connection);
 }
 
 
@@ -2357,7 +2355,6 @@ done:
     if (rc != NGX_OK) {
         ngx_http_cgi_terminate_request(ctx, rc);
     }
-    ngx_http_run_posted_requests(r->connection);
 }
 
 
@@ -2572,7 +2569,6 @@ done:
     if (rc != NGX_OK) {
         ngx_http_cgi_terminate_request(ctx, rc);
     }
-    ngx_http_run_posted_requests(r->connection);
 }
 
 
@@ -2648,7 +2644,6 @@ done:
     if (rc != NGX_OK) {
         ngx_http_cgi_terminate_request(ctx, rc);
     }
-    ngx_http_run_posted_requests(r->connection);
 }
 
 
@@ -2715,7 +2710,6 @@ done:
     if (rc != NGX_OK) {
         ngx_http_cgi_terminate_request(ctx, rc);
     }
-    ngx_http_run_posted_requests(r->connection);
 }
 
 
@@ -2818,7 +2812,6 @@ done:
     if (rc != NGX_OK) {
         ngx_http_cgi_terminate_request(ctx, rc);
     }
-    ngx_http_run_posted_requests(r->connection);
 }
 
 
