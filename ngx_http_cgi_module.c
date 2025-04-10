@@ -454,7 +454,7 @@ _ngx_http_cgi_try_clean_process_node(
 //   -2: process not managed by nginx-cgi
 //   -999: unknown error
 static int
-ngx_http_cgi_deref_process(int pid) {
+ngx_http_cgi_deref_process(int pid, ngx_flag_t always_deref) {
     int status = -999;
 
     ngx_http_cgi_block_sigchld();
@@ -463,13 +463,15 @@ ngx_http_cgi_deref_process(int pid) {
     ngx_http_cgi_process_t *cur = NULL;
 
     if (_ngx_http_cgi_find_process(pid, &prev, &cur)) {
-        if (cur->refs > 0) {
-            cur->refs -= 1;
-        }
-
         if (!cur->zombie_cleaned) {
             if (waitpid(cur->pid, &cur->wstatus, WNOHANG) > 0) {
                 cur->zombie_cleaned = 1;
+            }
+        }
+
+        if (always_deref || cur->zombie_cleaned) {
+            if (cur->refs > 0) {
+                cur->refs -= 1;
             }
         }
 
@@ -2298,6 +2300,43 @@ done:
 
 
 static void
+ngx_http_cgi_delay_check_process_handler(ngx_event_t *ev) {
+    ngx_http_cgi_ctx_t  *ctx = ev->data;
+    ngx_int_t            rc = NGX_OK;
+
+    int status = ngx_http_cgi_deref_process(ctx->pid, 1);
+    if (status == -1 || status == 0) {
+        // process manually closed stdout or exited with code 0
+        rc = ngx_http_cgi_flush(ctx, 1);
+        if (rc != NGX_OK) {
+            goto done;
+        }
+        ngx_http_finalize_request(ctx->r, NGX_OK);
+    } else if (status > 0) {
+        // process exited abnormal
+        // 126 and 127 have special meaning in POSIX shell
+        if (status == 127) {
+            rc = NGX_HTTP_NOT_FOUND;
+        } else if (status == 126) {
+            rc = NGX_HTTP_FORBIDDEN;
+        } else {
+            rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+        }
+        goto done;
+    } else {
+        // should not happen
+        rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+        goto done;
+    }
+
+done:
+    if (rc != NGX_OK) {
+        ngx_http_cgi_terminate_request(ctx, rc);
+    }
+}
+
+
+static void
 ngx_http_cgi_stdout_handler(ngx_event_t *ev) {
     ngx_int_t           rc = NGX_OK;
     ngx_connection_t   *c = ev->data;
@@ -2357,9 +2396,18 @@ ngx_http_cgi_stdout_handler(ngx_event_t *ev) {
         ngx_close_connection(ctx->c_stdout);
         ctx->c_stdout = NULL;
 
-        int status = ngx_http_cgi_deref_process(ctx->pid);
-        if (status == -1 || status == 0) {
-            // process manually closed stdout or exited with code 0
+        int status = ngx_http_cgi_deref_process(ctx->pid, 0);
+        if (status == -1) {
+            // process still running
+            // on FreeBSD and OpenBSD, pipe closing may comes before process
+            // finishing. Let's wait 1ms and try again here.
+            if (ctx->timer.timer_set) {
+                ngx_del_timer(&ctx->timer);
+            }
+            ctx->timer.handler = ngx_http_cgi_delay_check_process_handler;
+            ngx_add_timer(&ctx->timer, 1);
+        } else if (status == 0) {
+            // process exited with code 0
             rc = ngx_http_cgi_flush(ctx, 1);
             if (rc != NGX_OK) {
                 goto done;
@@ -2584,10 +2632,9 @@ ngx_http_cgi_handler_real(ngx_http_cgi_ctx_t *ctx) {
         }
     }
 
+    ctx->timer.data = ctx;
+    ctx->timer.log = ctx->r->connection->log;
     if (ctx->conf->timeout) {
-        ctx->timer.data = ctx;
-        ctx->timer.log = ctx->r->connection->log;
-
         if (ctx->conf->timeout->t1 > 0) {
             ctx->timer.handler = ngx_http_cgi_timeout_handler;
             ngx_add_timer(&ctx->timer, ctx->conf->timeout->t1);
