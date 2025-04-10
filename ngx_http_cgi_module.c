@@ -158,24 +158,6 @@ typedef struct ngx_http_cgi_ctx_s {
     ngx_chain_t                   *cache_tail;  // body sending cache
 
     ngx_event_t                    timer;
-
-    // TODO: remove this
-    //
-    // This is a temporary solution to connection hanging. See:
-    // https://github.com/pjincz/nginx-cgi/commit/264cc83d511877e2ce1eede08e778e47fe4837b1
-    //
-    // I think I might did something wrong. But I have no idea where's the
-    // problem. I have sent this problem to Valentin, he is a developer of nginx
-    // and angie. And he's helping to invest. Hope we can have right solution
-    // soon. But anyway, I need a way to move forward first.
-    //
-    // For this temporary solution, I use this field to track terminating of
-    // request. During destroying of request, I will set the value that
-    // referenced by `terminating_probe` to 1. By this, invoker of
-    // ngx_http_finalize_request has way to know whether request is freed by
-    // ngx_http_finalize_request or not. And if not, it can run
-    // ngx_http_run_posted_requests to finish the request.
-    ngx_flag_t                    *terminating_probe;
 } ngx_http_cgi_ctx_t;
 
 
@@ -769,10 +751,6 @@ ngx_http_cgi_ctx_cleanup(void *data) {
     }
     if (ctx->c_stderr) {
         ngx_close_connection(ctx->c_stderr);
-    }
-
-    if (ctx->terminating_probe) {
-        *ctx->terminating_probe = 1;
     }
 }
 
@@ -2136,9 +2114,6 @@ ngx_http_cgi_terminate_request(ngx_http_cgi_ctx_t *ctx, ngx_int_t rc) {
 
     ngx_connection_t *conn = ctx->r->connection;
 
-    ngx_flag_t terminated = 0;
-    ctx->terminating_probe = &terminated;
-
     if (!ctx->r->header_sent) {
         ngx_http_finalize_request(ctx->r, rc);
     } else {
@@ -2161,10 +2136,7 @@ ngx_http_cgi_terminate_request(ngx_http_cgi_ctx_t *ctx, ngx_int_t rc) {
         ngx_http_finalize_request(ctx->r, NGX_ERROR);
     }
 
-    if (!terminated) {
-        ctx->terminating_probe = NULL;
-        ngx_http_run_posted_requests(conn);
-    }
+    ngx_http_run_posted_requests(conn);
 }
 
 
@@ -2859,10 +2831,7 @@ static void
 ngx_http_cgi_handler_async(ngx_http_request_t *r) {
     ngx_int_t            rc;
     ngx_http_cgi_ctx_t  *ctx;
-    // TODO: change this back to ngx_http_cleanup_t once terminating_probe
-    // removed.
-    // ngx_http_cleanup_t  *cln;
-    ngx_pool_cleanup_t  *cln;
+    ngx_http_cleanup_t  *cln;
 
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "http cgi handle init");
@@ -2878,8 +2847,8 @@ ngx_http_cgi_handler_async(ngx_http_request_t *r) {
         cln = ngx_pcalloc(r->pool, sizeof(*cln));
         cln->data = ctx;
         cln->handler = ngx_http_cgi_ctx_cleanup;
-        cln->next = r->pool->cleanup;
-        r->pool->cleanup = cln;
+        cln->next = r->cleanup;
+        r->cleanup = cln;
 
         ngx_http_set_ctx(r, ctx, ngx_http_cgi_module);
     }
