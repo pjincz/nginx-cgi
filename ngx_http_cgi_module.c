@@ -409,16 +409,13 @@ static void ngx_http_cgi_unblock_sigchld() {
 
 // **invoking of this method should protected by ngx_http_cgi_block_sigchld**
 static ngx_flag_t
-_ngx_http_cgi_find_process(
-    int pid, ngx_http_cgi_process_t **pprev, ngx_http_cgi_process_t **pcur)
+_ngx_http_cgi_find_process(int pid, ngx_http_cgi_process_t **pp)
 {
-    ngx_http_cgi_process_t *prev = NULL;
-    ngx_http_cgi_process_t *cur = _gs_http_cgi_processes;
+    ngx_http_cgi_process_t *p = _gs_http_cgi_processes;
 
-    for (; cur != NULL; prev = cur, cur = prev->next) {
-        if (cur->pid == pid) {
-            *pprev = prev;
-            *pcur = cur;
+    for (; p; p = p->next) {
+        if (p->pid == pid) {
+            *pp = p;
             return 1;
         }
     }
@@ -428,22 +425,31 @@ _ngx_http_cgi_find_process(
 
 
 // **invoking of this method should protected by ngx_http_cgi_block_sigchld**
+// **this method cannot be invoked during signal handling**
 static void
-_ngx_http_cgi_try_clean_process_node(
-    ngx_http_cgi_process_t *prev, ngx_http_cgi_process_t *cur)
+_ngx_http_cgi_cleanup_process_nodes()
 {
-    if (cur->refs > 0 || !cur->sigchld_handled || !cur->zombie_cleaned) {
-        return;
-    }
+    ngx_http_cgi_process_t *prev = NULL;
+    ngx_http_cgi_process_t *cur = _gs_http_cgi_processes;
 
-    if (prev) {
-        prev->next = cur->next;
-    } else {
-        _gs_http_cgi_processes = cur->next;
+    while (cur) {
+        if (cur->refs == 0 && cur->sigchld_handled && cur->zombie_cleaned) {
+            // remove cur
+            if (prev) {
+                prev->next = cur->next;
+                free(cur);
+                cur = prev->next;
+            } else {
+                _gs_http_cgi_processes = cur->next;
+                free(cur);
+                cur = _gs_http_cgi_processes;
+            }
+        } else {
+            // next
+            prev = cur;
+            cur = cur->next;
+        }
     }
-
-    // FIXME: free cannot be used in signal handler
-    // free(cur);
 }
 
 
@@ -460,33 +466,35 @@ ngx_http_cgi_deref_process(int pid, ngx_flag_t always_deref) {
 
     ngx_http_cgi_block_sigchld();
 
-    ngx_http_cgi_process_t *prev = NULL;
-    ngx_http_cgi_process_t *cur = NULL;
+    // `malloc` and `free` cannot be invoked in signal handler
+    // so I keep out-dated nodes on the chain when doing signal handler
+    // let's clean them here
+    _ngx_http_cgi_cleanup_process_nodes();
 
-    if (_ngx_http_cgi_find_process(pid, &prev, &cur)) {
-        if (!cur->zombie_cleaned) {
-            if (waitpid(cur->pid, &cur->wstatus, WNOHANG) > 0) {
-                cur->zombie_cleaned = 1;
+    ngx_http_cgi_process_t *p = NULL;
+
+    if (_ngx_http_cgi_find_process(pid, &p)) {
+        if (!p->zombie_cleaned) {
+            if (waitpid(p->pid, &p->wstatus, WNOHANG) > 0) {
+                p->zombie_cleaned = 1;
             }
         }
 
-        if (always_deref || cur->zombie_cleaned) {
-            if (cur->refs > 0) {
-                cur->refs -= 1;
+        if (always_deref || p->zombie_cleaned) {
+            if (p->refs > 0) {
+                p->refs -= 1;
             }
         }
 
-        if (cur->zombie_cleaned) {
-            if (WIFEXITED(cur->wstatus)) {
-                status = WEXITSTATUS(cur->wstatus);
-            } else if (WIFSIGNALED(cur->wstatus)) {
-                status = WTERMSIG(cur->wstatus) + 128;
+        if (p->zombie_cleaned) {
+            if (WIFEXITED(p->wstatus)) {
+                status = WEXITSTATUS(p->wstatus);
+            } else if (WIFSIGNALED(p->wstatus)) {
+                status = WTERMSIG(p->wstatus) + 128;
             }
         } else {
             status = -1;
         }
-
-        _ngx_http_cgi_try_clean_process_node(prev, cur);
     } else {
         status = -2;
     }
@@ -500,11 +508,10 @@ static void
 ngx_http_cgi_kill_process(int pid, int sig) {
     ngx_http_cgi_block_sigchld();
 
-    ngx_http_cgi_process_t *prev = NULL;
-    ngx_http_cgi_process_t *cur = NULL;
+    ngx_http_cgi_process_t *p = NULL;
 
-    if (_ngx_http_cgi_find_process(pid, &prev, &cur)) {
-        kill(-cur->pid, sig);
+    if (_ngx_http_cgi_find_process(pid, &p)) {
+        kill(-p->pid, sig);
     }
 
     ngx_http_cgi_unblock_sigchld();
@@ -513,46 +520,24 @@ ngx_http_cgi_kill_process(int pid, int sig) {
 
 static void
 ngx_http_cgi_sigchld_handler_waitall() {
-    ngx_http_cgi_process_t *prev = NULL;
-    ngx_http_cgi_process_t *cur = _gs_http_cgi_processes;
+    ngx_http_cgi_process_t *p = _gs_http_cgi_processes;
 
-    while (cur) {
-        if (!cur->zombie_cleaned
-            && waitpid(cur->pid, &cur->wstatus, WNOHANG) > 0)
-        {
-            cur->zombie_cleaned = 1;
-            cur->sigchld_handled = 1;
+    for (; p; p = p->next) {
+        if (!p->zombie_cleaned && waitpid(p->pid, &p->wstatus, WNOHANG) > 0) {
+            p->zombie_cleaned = 1;
+            p->sigchld_handled = 1;
 
-            if (cur->spawn_successful) {
-                if (WIFEXITED(cur->wstatus)) {
+            if (p->spawn_successful) {
+                if (WIFEXITED(p->wstatus)) {
                     ngx_log_error(NGX_LOG_INFO, ngx_cycle->log, 0,
                         "cgi process %d quits with status %d",
-                        cur->pid, WEXITSTATUS(cur->wstatus));
-                } else if (WIFSIGNALED(cur->wstatus)) {
+                        p->pid, WEXITSTATUS(p->wstatus));
+                } else if (WIFSIGNALED(p->wstatus)) {
                     ngx_log_error(NGX_LOG_INFO, ngx_cycle->log, 0,
                         "cgi process %d was killed by signal %d",
-                        cur->pid, WTERMSIG(cur->wstatus));
+                        p->pid, WTERMSIG(p->wstatus));
                 }
             }
-        }
-
-        if (cur->refs == 0 && cur->sigchld_handled && cur->zombie_cleaned) {
-            // remove cur
-            if (prev) {
-                prev->next = cur->next;
-                // FIXME: free cannot be used in signal handler
-                // free(cur);
-                cur = prev->next;
-            } else {
-                _gs_http_cgi_processes = cur->next;
-                // FIXME: free cannot be used in signal handler
-                // free(cur);
-                cur = _gs_http_cgi_processes;
-            }
-        } else {
-            // next
-            prev = cur;
-            cur = cur->next;
         }
     }
 }
@@ -560,38 +545,36 @@ ngx_http_cgi_sigchld_handler_waitall() {
 
 static void
 ngx_http_cgi_sigchld_handler(int sid, siginfo_t *sinfo, void *ucontext) {
-    ngx_http_cgi_process_t *prev = NULL;
-    ngx_http_cgi_process_t *cur = NULL;
+    ngx_http_cgi_process_t *p = NULL;
     ngx_flag_t forward_signal = 1;
-    
+
     if (sinfo->si_pid == 0) {
         // On openbsd, sinfo->si_pid may be 0. In this case, we need to iterate
         // all owned processes.
         ngx_http_cgi_sigchld_handler_waitall();
         // need forward signal here
-    } else if (_ngx_http_cgi_find_process(sinfo->si_pid, &prev, &cur)) {
-        cur->sigchld_handled = 1;
+    } else if (_ngx_http_cgi_find_process(sinfo->si_pid, &p)) {
+        p->sigchld_handled = 1;
 
-        if (waitpid(cur->pid, &cur->wstatus, WNOHANG) > 0) {
-            cur->zombie_cleaned = 1;
+        if (waitpid(p->pid, &p->wstatus, WNOHANG) > 0) {
+            p->zombie_cleaned = 1;
         }
 
         // it looks this if stmt is unnecessary here, god knows
-        if (cur->zombie_cleaned) {
-            if (cur->spawn_successful) {
-                if (WIFEXITED(cur->wstatus)) {
+        if (p->zombie_cleaned) {
+            if (p->spawn_successful) {
+                if (WIFEXITED(p->wstatus)) {
                     ngx_log_error(NGX_LOG_INFO, ngx_cycle->log, 0,
                         "cgi process %d quits with status %d",
-                        cur->pid, WEXITSTATUS(cur->wstatus));
-                } else if (WIFSIGNALED(cur->wstatus)) {
+                        p->pid, WEXITSTATUS(p->wstatus));
+                } else if (WIFSIGNALED(p->wstatus)) {
                     ngx_log_error(NGX_LOG_INFO, ngx_cycle->log, 0,
                         "cgi process %d was killed by signal %d",
-                        cur->pid, WTERMSIG(cur->wstatus));
+                        p->pid, WTERMSIG(p->wstatus));
                 }
             }
         }
 
-        _ngx_http_cgi_try_clean_process_node(prev, cur);
         forward_signal = 0;
     }
 
