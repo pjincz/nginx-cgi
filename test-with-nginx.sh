@@ -35,7 +35,10 @@ if [ -f "$NGINX_DIR/Makefile" ]; then
 fi
 
 if [ ! -f "$NGINX_DIR/Makefile" ]; then
-    (cd "$NGINX_DIR" && ./auto/configure --add-dynamic-module="$THIS_DIR" --with-cc="$CC" --with-debug)
+    (cd "$NGINX_DIR" && \
+     ./auto/configure --add-dynamic-module="$THIS_DIR" \
+                      --with-cc="$CC" --with-cc-opt=-O0 \
+                      --with-debug)
 fi
 
 (cd "$NGINX_DIR" && make -j "$JOBS")

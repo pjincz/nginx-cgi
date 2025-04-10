@@ -35,7 +35,10 @@ if [ -f "$ANGIE_DIR/Makefile" ]; then
 fi
 
 if [ ! -f "$ANGIE_DIR/Makefile" ]; then
-    (cd "$ANGIE_DIR" && ./configure --add-dynamic-module="$THIS_DIR" --with-cc="$CC" --with-debug)
+    (cd "$ANGIE_DIR" && \
+     ./configure --add-dynamic-module="$THIS_DIR" \
+                 --with-cc="$CC" --with-cc-opt=-O0 \
+                 --with-debug)
 fi
 
 (cd "$ANGIE_DIR" && make -j "$JOBS")
