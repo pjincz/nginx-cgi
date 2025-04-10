@@ -442,7 +442,8 @@ _ngx_http_cgi_try_clean_process_node(
         _gs_http_cgi_processes = cur->next;
     }
 
-    free(cur);
+    // FIXME: free cannot be used in signal handler
+    // free(cur);
 }
 
 
@@ -511,11 +512,64 @@ ngx_http_cgi_kill_process(int pid, int sig) {
 
 
 static void
+ngx_http_cgi_sigchld_handler_waitall() {
+    ngx_http_cgi_process_t *prev = NULL;
+    ngx_http_cgi_process_t *cur = _gs_http_cgi_processes;
+
+    while (cur) {
+        if (!cur->zombie_cleaned
+            && waitpid(cur->pid, &cur->wstatus, WNOHANG) > 0)
+        {
+            cur->zombie_cleaned = 1;
+            cur->sigchld_handled = 1;
+
+            if (cur->spawn_successful) {
+                if (WIFEXITED(cur->wstatus)) {
+                    ngx_log_error(NGX_LOG_INFO, ngx_cycle->log, 0,
+                        "cgi process %d quits with status %d",
+                        cur->pid, WEXITSTATUS(cur->wstatus));
+                } else if (WIFSIGNALED(cur->wstatus)) {
+                    ngx_log_error(NGX_LOG_INFO, ngx_cycle->log, 0,
+                        "cgi process %d was killed by signal %d",
+                        cur->pid, WTERMSIG(cur->wstatus));
+                }
+            }
+        }
+
+        if (cur->refs == 0 && cur->sigchld_handled && cur->zombie_cleaned) {
+            // remove cur
+            if (prev) {
+                prev->next = cur->next;
+                // FIXME: free cannot be used in signal handler
+                // free(cur);
+                cur = prev->next;
+            } else {
+                _gs_http_cgi_processes = cur->next;
+                // FIXME: free cannot be used in signal handler
+                // free(cur);
+                cur = _gs_http_cgi_processes;
+            }
+        } else {
+            // next
+            prev = cur;
+            cur = cur->next;
+        }
+    }
+}
+
+
+static void
 ngx_http_cgi_sigchld_handler(int sid, siginfo_t *sinfo, void *ucontext) {
     ngx_http_cgi_process_t *prev = NULL;
     ngx_http_cgi_process_t *cur = NULL;
+    ngx_flag_t forward_signal = 1;
     
-    if (_ngx_http_cgi_find_process(sinfo->si_pid, &prev, &cur)) {
+    if (sinfo->si_pid == 0) {
+        // On openbsd, sinfo->si_pid may be 0. In this case, we need to iterate
+        // all owned processes.
+        ngx_http_cgi_sigchld_handler_waitall();
+        // need forward signal here
+    } else if (_ngx_http_cgi_find_process(sinfo->si_pid, &prev, &cur)) {
         cur->sigchld_handled = 1;
 
         if (waitpid(cur->pid, &cur->wstatus, WNOHANG) > 0) {
@@ -538,7 +592,10 @@ ngx_http_cgi_sigchld_handler(int sid, siginfo_t *sinfo, void *ucontext) {
         }
 
         _ngx_http_cgi_try_clean_process_node(prev, cur);
-    } else {
+        forward_signal = 0;
+    }
+
+    if (forward_signal) {
         // forward signal to orig handler
         if (_gs_ngx_cgi_orig_sigchld_sa->sa_flags & SA_SIGINFO) {
             _gs_ngx_cgi_orig_sigchld_sa->sa_sigaction(sid, sinfo, ucontext);
@@ -2397,15 +2454,23 @@ ngx_http_cgi_stdout_handler(ngx_event_t *ev) {
         ctx->c_stdout = NULL;
 
         int status = ngx_http_cgi_deref_process(ctx->pid, 0);
+
         if (status == -1) {
-            // process still running
-            // on FreeBSD and OpenBSD, pipe closing may comes before process
-            // finishing. Let's wait 1ms and try again here.
+            // Sometimes, pipe closing may comes before process finishing,
+            // especially on BSD system. Let's do some delay and try again.
+            // Depends on my tests, 1ms delay is enough for most of OS. But for
+            // OpenBSD, it takes 5ms. Let's do 1ms delay on most of OS, and
+            // do 5ms delay on OpenBSD here.
+#ifdef __OpenBSD__
+            int delay = 5;
+#else
+            int delay = 1;
+#endif
             if (ctx->timer.timer_set) {
                 ngx_del_timer(&ctx->timer);
             }
             ctx->timer.handler = ngx_http_cgi_delay_check_process_handler;
-            ngx_add_timer(&ctx->timer, 1);
+            ngx_add_timer(&ctx->timer, delay);
         } else if (status == 0) {
             // process exited with code 0
             rc = ngx_http_cgi_flush(ctx, 1);
