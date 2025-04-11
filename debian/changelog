@@ -1,3 +1,13 @@
+nginx-cgi (0.12) stable; urgency=medium
+
+  * Added `cgi_timeout` option
+  * Added `cgi_body_only` option
+  * Kill CGI process when request abort
+  * Terminate CGI request when process crashed
+  * Map process exit status to CGI response
+
+ -- Chizhong Jin <pjincz@gmail.com>  Sat, 12 Apr 2025 04:40:10 +0800
+
 nginx-cgi (0.11.1) stable; urgency=high
 
   * Fix a serious issue in 0.11: cgi module turned on by default
