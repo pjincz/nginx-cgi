@@ -2421,13 +2421,20 @@ ngx_http_cgi_stdout_handler(ngx_event_t *ev) {
         if (status == -1) {
             // Sometimes, pipe closing event may comes before process finishing,
             // especially on BSD and Solaris system. Let's do some delay and try
-            // again. Depends on my tests, 1ms delay is enough for most of OS.
-            // But for OpenBSD and Solaris, they need 5ms. Let's do 1ms delay on
-            // most of OS, and do 5ms delay on OpenBSD here.
+            // again.
+            //
+            // Depends on my tests, 1ms delay is good enough for most OSes. But
+            // for OpenBSD and Solaris, a delay of 5ms needed to keep unit tests
+            // run for 1day without error. Just to be safe, I set the delay to 2
+            // and 6 here.
+            //
+            // If one day, this plugin has enough users, I will refactor this.
+            // But now, it's good enough, escaping of signal is really far too
+            // complex here.
 #if (__OpenBSD__ || __sun__)
-            int delay = 5;
+            int delay = 6;
 #else
-            int delay = 1;
+            int delay = 2;
 #endif
             if (ctx->timer.timer_set) {
                 ngx_del_timer(&ctx->timer);
