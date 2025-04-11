@@ -45,10 +45,15 @@ fi
 WITH_ASAN="${WITH_ASAN:-$SYSTEM_SUPPORT_ASAN}"
 
 if [ "$WITH_ASAN" = "1" ]; then
-    # On Ubuntu 20.04, gcc asan causes false positive stack-overflow error
-    # disable it with `--param asan-stack=0`
-    CC_OPT="-O0 -DNGX_DEBUG_PALLOC -DNGX_DEBUG_MALLOC -fsanitize=address --param asan-stack=0"
+    CC_OPT="-O0 -DNGX_DEBUG_PALLOC -DNGX_DEBUG_MALLOC -fsanitize=address"
     LD_OPT="-fsanitize=address"
+
+    if cc -v 2>&1 | grep -q gcc; then
+        # On gcc 9.4, asan reports false stack-overflow error
+        # disable it with `--param asan-stack=0`
+        CC_OPT="$CC_OPT  --param asan-stack=0"
+    fi
+
     # nginx has odr violation problem, just ignore it
     # nginx has memory leaking problem, ignore it for now
     export ASAN_OPTIONS=detect_odr_violation=0,detect_leaks=0
