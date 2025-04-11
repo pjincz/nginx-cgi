@@ -45,7 +45,9 @@ fi
 WITH_ASAN="${WITH_ASAN:-$SYSTEM_SUPPORT_ASAN}"
 
 if [ "$WITH_ASAN" = "1" ]; then
-    CC_OPT="-O0 -DNGX_DEBUG_PALLOC -DNGX_DEBUG_MALLOC -fsanitize=address"
+    # On Ubuntu 20.04, gcc asan causes false positive stack-overflow error
+    # disable it with `--param asan-stack=0`
+    CC_OPT="-O0 -DNGX_DEBUG_PALLOC -DNGX_DEBUG_MALLOC -fsanitize=address --param asan-stack=0"
     LD_OPT="-fsanitize=address"
     # nginx has odr violation problem, just ignore it
     # nginx has memory leaking problem, ignore it for now
