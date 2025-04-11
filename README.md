@@ -204,14 +204,14 @@ change the default document root):
 ```sh
 #!/bin/sh
 
-echo "Content-Type: text/plain"
 echo "Status: 200 OK"
+echo "Content-Type: text/plain"
 echo
 
 echo "Hello world"
 ```
 
-The first line of the script is shebang. If you clearly set `cgi_interpreter`,
+The first line of the script is a shebang. If you clearly set `cgi_interpreter`,
 it's okay to remove this line, otherwise missing of shebang will causes a 500
 error. Some shell allows script be executable even without shebang, but it's not
 allowed here. If a script runable by shell, but return 500 error, check the
@@ -240,12 +240,9 @@ After all, you need to add the x permission to the file:
 chmod +x /var/www/html/cgi-bin/hello.sh
 ```
 
-Nginx-cgi will check file's x permission before executing it. If the file has
-no x permission. A 403 error will be return to the client.
-
-This behaviour can be changed by turning off `cgi_x_only` option. If you want to
-do this, don't forget to set `cgi_interpreter` as well, otherwise you will got
-a 500 error.
+Normally, you need x-permission to make script runable. Missing of x-permission
+can cause 403 error. If can't do this for any reason, `cgi_interpreter` can
+help.
 
 ### Request header
 
@@ -311,6 +308,171 @@ in response here, a 500 error will response to the client.
 
 For more information:
 <https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers#hop-by-hop_headers>
+
+## Tricks && FAQ
+
+### I want to list all environment variables
+
+Put following script to your cgi directory, and curl it form your terminal:
+
+```sh
+#!/bin/sh
+
+echo 'Content-Type: text/plain'
+echo
+
+printenv
+```
+
+### I want root permission
+
+Put a sudo file to `/etc/sudoers.d` and run `sudo` in your script or set
+`cgi_interpreter` as `/usr/bin/sudo`.
+
+Here's an example of sudo config file:
+
+```text
+# allow wwww-data run /var/www/bin/my-danger-script with root account
+www-data ALL=(root) NOPASSWD: /var/www/bin/my-danger-script
+
+# allow all CGI script be luanched with sudo by nginx-cgi directly
+www-data ALL=(root) NOPASSWD: SETENV: /var/www/html/cgi-bin/*
+```
+
+### I want create a background process
+
+Just make sure not to inherit `stdout` when creating the process (ideally, avoid
+inheriting `stdin` and `stderr` as well). Here's an example write in shell.
+
+```sh
+taskid=1234
+logfile="/var/lib/my-project/$taskid"
+./long-run-task.sh "$taskid" </dev/null >"$logfile" 2>&1 &
+```
+
+Or if you are familiar with pipe operation, just close `stdout` (also, it's
+better to close `stdin` and `stderr` as well), http request will finished
+immediently. And you can use the process as background process.
+
+```sh
+exec </dev/null >somewhere 2>&1
+
+# now http response is done, do what every you like
+sleep 9999
+```
+
+
+### My http request hangs
+
+As you see abvoing. In CGI world, http request's lifecycle depends on pipe's
+(stdout's) lifecycle.
+
+Each child process might inherit the CGI process's pipe. If any process that
+inherited stdout remains alive, the HTTP request will never finish.
+
+This may causes confiusing, when you want a long run background or killing
+CGI process.
+
+For creating long-run process, see aboving topic.
+
+For killing CGI process, kill the whole process group rather than CGI process
+itself.
+
+```sh
+cgi_pid=...
+
+# don't do this
+# kill "$cgi_pid"
+
+# do this
+kill -- "-$cgi_pid"
+```
+
+### I want to kill my cgi script
+
+See aboving topic.
+
+### I want to generate content dynamicaly
+
+Traditionally, people use rewriting to archive this. But it's much easier here.
+You can do it with `cgi pass`. Here's an example to render markdone dynamically:
+
+```conf
+{
+    location ~ ^.*\.md$ {
+        cgi_pass /var/www/bin/cgi/render-markdown.sh;
+    }
+}
+```
+
+```sh
+#!/bin/sh
+
+set -e
+
+if [ ! -f "${DOCUMENT_ROOT}${PATH_INFO}" ]; then
+    echo "Status: 404"
+    echo
+    exit
+fi
+
+echo "Status: 200"
+echo "Content-Type: text/html"
+echo
+
+echo "<html><body>"
+markdown "${DOCUMENT_ROOT}${PATH_INFO}"
+echo "</body></html>"
+```
+
+### I don't like suffixes in url
+
+Way 1: Removing CGI script's suffix
+
+Way 2: do rewriting
+
+Way 3: `cgi pass`
+
+### How can I response status other than 200
+
+```sh
+#!/bin/sh
+
+echo "Status: 404"
+echo "Content-Type: text/plain"
+echo
+
+echo "Welcome to the void"
+```
+
+### How can I response a redirection
+
+```sh
+#!/bin/sh
+
+echo "Status: 302"
+echo "Location: https://theuselessweb.com"
+echo
+```
+
+### How can I get http request body
+
+You can read the request body from `stdin`. If you're using shell, `cat` can
+quickly save request body to a file.
+
+### How can send file to the client
+
+For small files, you can write file to `stdout` directly.
+
+For large files, it's much better to send a 302 response. Because CGI response
+is streaming, protocol cannot easily handle caching, chunked downloads, or
+resume support.
+
+### I want to write CGI with python, ruby, perl, C, C++...
+
+Go for it. Nginx-cgi don't care what language you use. Just grabs information
+from environment var, and read request body from `stdin`, and write output to
+`stdout`.
 
 ## Manual
 
@@ -636,171 +798,6 @@ The full path to the CGI script.
 
 Server ip address. If the server has multiple ip addresses. The value of this
 variable can be different if requests came from different interfaces.
-
-## Tricks && FAQ
-
-### I want to list all environment variables
-
-Put following script to your cgi directory, and curl it form your terminal:
-
-```sh
-#!/bin/sh
-
-echo 'Content-Type: text/plain'
-echo
-
-printenv
-```
-
-### I want root permission
-
-Put a sudo file to `/etc/sudoers.d` and run `sudo` in your script or set
-`cgi_interpreter` as `/usr/bin/sudo`.
-
-Here's an example of sudo config file:
-
-```text
-# allow wwww-data run /var/www/bin/my-danger-script with root account
-www-data ALL=(root) NOPASSWD: /var/www/bin/my-danger-script
-
-# allow all CGI script be luanched with sudo by nginx-cgi directly
-www-data ALL=(root) NOPASSWD: SETENV: /var/www/html/cgi-bin/*
-```
-
-### I want create a background process
-
-Just make sure not to inherit `stdout` when creating the process (ideally, avoid
-inheriting `stdin` and `stderr` as well). Here's an example write in shell.
-
-```sh
-taskid=1234
-logfile="/var/lib/my-project/$taskid"
-./long-run-task.sh "$taskid" </dev/null >"$logfile" 2>&1 &
-```
-
-Or if you are familiar with pipe operation, just close `stdout` (also, it's
-better to close `stdin` and `stderr` as well), http request will finished
-immediently. And you can use the process as background process.
-
-```sh
-exec </dev/null >somewhere 2>&1
-
-# now http response is done, do what every you like
-sleep 9999
-```
-
-
-### My http request hangs
-
-As you see abvoing. In CGI world, http request's lifecycle depends on pipe's
-(stdout's) lifecycle.
-
-Each child process might inherit the CGI process's pipe. If any process that
-inherited stdout remains alive, the HTTP request will never finish.
-
-This may causes confiusing, when you want a long run background or killing
-CGI process.
-
-For creating long-run process, see aboving topic.
-
-For killing CGI process, kill the whole process group rather than CGI process
-itself.
-
-```sh
-cgi_pid=...
-
-# don't do this
-# kill "$cgi_pid"
-
-# do this
-kill -- "-$cgi_pid"
-```
-
-### I want to kill my cgi script
-
-See aboving topic.
-
-### I want to generate content dynamicaly
-
-Traditionally, people use rewriting to archive this. But it's much easier here.
-You can do it with `cgi pass`. Here's an example to render markdone dynamically:
-
-```conf
-{
-    location ~ ^.*\.md$ {
-        cgi_pass /var/www/bin/cgi/render-markdown.sh;
-    }
-}
-```
-
-```sh
-#!/bin/sh
-
-set -e
-
-if [ ! -f "${DOCUMENT_ROOT}${PATH_INFO}" ]; then
-    echo "Status: 404"
-    echo
-    exit
-fi
-
-echo "Status: 200"
-echo "Content-Type: text/html"
-echo
-
-echo "<html><body>"
-markdown "${DOCUMENT_ROOT}${PATH_INFO}"
-echo "</body></html>"
-```
-
-### I don't like suffixes in url
-
-Way 1: Removing CGI script's suffix
-
-Way 2: do rewriting
-
-Way 3: `cgi pass`
-
-### How can I response status other than 200
-
-```sh
-#!/bin/sh
-
-echo "Status: 404"
-echo "Content-Type: text/plain"
-echo
-
-echo "Welcome to the void"
-```
-
-### How can I response a redirection
-
-```sh
-#!/bin/sh
-
-echo "Status: 302"
-echo "Location: https://theuselessweb.com"
-echo
-```
-
-### How can I get http request body
-
-You can read the request body from `stdin`. If you're using shell, `cat` can
-quickly save request body to a file.
-
-### How can send file to the client
-
-For small files, you can write file to `stdout` directly.
-
-For large files, it's much better to send a 302 response. Because CGI response
-is streaming, protocol cannot easily handle caching, chunked downloads, or
-resume support.
-
-### I want to write CGI with python, ruby, perl, C, C++...
-
-Go for it. Nginx-cgi don't care what language you use. Just grabs information
-from environment var, and read request body from `stdin`, and write output to
-`stdout`.
 
 ## Known Issues
 
