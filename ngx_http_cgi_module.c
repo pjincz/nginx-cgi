@@ -2216,7 +2216,6 @@ static ngx_flag_t
 ngx_http_cgi_is_client_disconnected(ngx_http_cgi_ctx_t *ctx) {
     ngx_http_request_t *r = ctx->r;
     ngx_connection_t   *c = r->connection;
-    ngx_event_t        *ev = c->read;
 
 #if (NGX_HTTP_V2)
     if (r->stream) {
@@ -2232,13 +2231,13 @@ ngx_http_cgi_is_client_disconnected(ngx_http_cgi_ctx_t *ctx) {
 
 #if (NGX_HAVE_KQUEUE)
     if (ngx_event_flags & NGX_USE_KQUEUE_EVENT) {
-        return ev->pending_eof;
+        return c->read->pending_eof;
     }
 #endif
 
 #if (NGX_HAVE_EPOLLRDHUP)
     if ((ngx_event_flags & NGX_USE_EPOLL_EVENT) && ngx_use_epoll_rdhup) {
-        return ev->pending_eof;
+        return c->read->pending_eof;
     }
 #endif
 
@@ -2420,12 +2419,12 @@ ngx_http_cgi_stdout_handler(ngx_event_t *ev) {
         int status = ngx_http_cgi_deref_process(ctx->pid, 0);
 
         if (status == -1) {
-            // Sometimes, pipe closing may comes before process finishing,
-            // especially on BSD system. Let's do some delay and try again.
-            // Depends on my tests, 1ms delay is enough for most of OS. But for
-            // OpenBSD, it takes 5ms. Let's do 1ms delay on most of OS, and
-            // do 5ms delay on OpenBSD here.
-#ifdef __OpenBSD__
+            // Sometimes, pipe closing event may comes before process finishing,
+            // especially on BSD and Solaris system. Let's do some delay and try
+            // again. Depends on my tests, 1ms delay is enough for most of OS.
+            // But for OpenBSD and Solaris, they need 5ms. Let's do 1ms delay on
+            // most of OS, and do 5ms delay on OpenBSD here.
+#if (__OpenBSD__ || __sun__)
             int delay = 5;
 #else
             int delay = 1;
