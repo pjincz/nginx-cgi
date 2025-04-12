@@ -23,7 +23,7 @@ CGI is good for:
 
 * Low frequency applications, such as system management
 * Resource limited systems, such as embeding system
-* Low budget projects, such as personal website
+* Low budget projects, such as personal websites
 * Prototyping, for fast iterate
 
 CGI is bad for:
@@ -31,6 +31,15 @@ CGI is bad for:
 * High QPS
 * High traffic
 * High concurrency
+
+I created a discord channel. If:
+
+* You are also a fun of CGI
+* If you have any problem with nginx-cgi
+* If you want to get update of nginx-cgi
+* If you want to know more friends
+
+Please join us: <https://discord.gg/DVwbbt9k>.
 
 ## Quick start (with Debian 12+, Ubuntu 24.04+)
 
