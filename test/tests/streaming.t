@@ -13,7 +13,7 @@ use Test::Nginx;
 select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
-my $t = Test::Nginx->new()->plan(13);
+my $t = Test::Nginx->new()->plan(14);
 ok($t->has_module('cgi'), 'has cgi module');
 
 ###############################################################################
@@ -117,3 +117,14 @@ $r = Test::Nginx::http_end($s);
 
 like($r, qr/\nn = 5\n/, 'n = 5');
 like($r, qr/\n5\n/, '5 appears in result');
+
+###############################################################################
+# https://github.com/pjincz/nginx-cgi/issues/12
+
+$r = http(<<EOF);
+GET /cgi-bin/delay-with-status.sh HTTP/1.1
+Host: localhost
+Connection: close
+
+EOF
+like($r, qr/chunked/m, 'chunk mode turned on');

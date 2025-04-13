@@ -1781,6 +1781,25 @@ header_done:
 
 
 static ngx_int_t
+ngx_http_cgi_parse_status_line(ngx_str_t *line, ngx_uint_t *status) {
+    char *ch = (char*)line->data;
+    char *end = (char*)line->data + line->len;
+
+    ngx_uint_t val = 0;
+    for (; ch != end && *ch != ' '; ++ch) {
+        if (*ch >= '0' && *ch <= '9') {
+            val = val * 10 + *ch - '0';
+        } else {
+            return NGX_ERROR;
+        }
+    }
+
+    *status = val;
+    return NGX_OK;
+}
+
+
+static ngx_int_t
 ngx_http_cgi_scan_header(ngx_http_cgi_ctx_t *ctx) {
     ngx_http_cgi_header_scan_t *scan = &ctx->header_scan;
     ngx_http_request_t         *r = ctx->r;
@@ -1825,6 +1844,13 @@ ngx_http_cgi_scan_header(ngx_http_cgi_ctx_t *ctx) {
                 ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                             "cgi status line: \"%V\"",
                             &r->headers_out.status_line);
+                if (ngx_http_cgi_parse_status_line(&r->headers_out.status_line,
+                        &r->headers_out.status) != NGX_OK)
+                {
+                    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                        "invalid cgi status line: \"%V\"",
+                        &line);
+                }
             } else if (_strieq(name, "Content-Length")) {
                 r->headers_out.content_length_n = ngx_atoi(scan->header_start,
                         scan->header_end - scan->header_start);
@@ -1880,7 +1906,7 @@ ngx_http_cgi_scan_header(ngx_http_cgi_ctx_t *ctx) {
     }
 
     // default status is 200, if cgi reponse not sepcified one
-    if (r->headers_out.status_line.data == NULL) {
+    if (r->headers_out.status == 0) {
         r->headers_out.status = 200;
     }
 
