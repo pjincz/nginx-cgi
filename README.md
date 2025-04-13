@@ -348,7 +348,160 @@ www-data ALL=(root) NOPASSWD: /var/www/bin/my-danger-script
 www-data ALL=(root) NOPASSWD: SETENV: /var/www/html/cgi-bin/*
 ```
 
-### I want create a background process
+### How can I run CGI scripts with chroot
+
+Compared to sudo, chroot is much harder. Because chroot was not originally
+designed as a security mechanism. I'd like to use `docker` or `jails` for this
+purpose. But that's okay, if you really want `chroot`. Let me show you how to do
+it.
+
+In this example, I assume you're using `/var/www/html` as the document root.
+
+Prepare a hello.sh CGI script first:
+
+```sh
+mkdir -p /var/www/html/cgi-bin
+cat > /var/www/html/cgi-bin/ls.sh <<EOF
+#!/bin/sh
+echo "Status: 200"
+echo "Content-Type: text-plain"
+echo
+echo "files under /:"
+ls /
+EOF
+chmod +x /var/www/html/cgi-bin/ls.sh
+
+# try it
+/var/www/html/cgi-bin/ls.sh
+```
+
+Step 1: prepare a chroot directory.
+
+That're a lot of ways to do this step. `debootstrap` is a popular way on debian
+based system. `busybox` is the most light way. `docker` is the modern way.
+
+Let's make a lightest directory by busybox here:
+
+```sh
+# In this example, I put everything to /var/www/chroot
+# Be careful, I download x86_64 busybox version here, you may need to change it
+# You need root permission to run all following commands, I'm too lazy to
+# prepend sudo to every commands here.
+
+root_dir=/var/www/chroot
+
+mkdir -p "$root_dir/bin" && cd "$root_dir/bin"
+wget https://www.busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox
+chmod +x busybox
+
+cd "$root_dir"
+mkdir -p $(dirname $(./bin/busybox --list-full) | sort -u)
+./bin/busybox --list-full | while read line; do ln -sf /bin/busybox $line; done
+
+# try it
+chroot "$root_dir" ls
+```
+
+Step 2: mount document root into chroot dir
+
+```sh
+mkdir -p /var/www/chroot/var/www/html
+mount --bind /var/www/html /var/www/chroot/var/www/html
+
+# try it
+ls /var/www/chroot/var/www/html
+```
+
+Notice:
+
+* I use a trick here, after chroot, the document root is still the same. By this
+  we can same sometime to do path mapping.
+
+* The mount directory will not persist after a reboot. You may need add an entry
+  to /etc/fstab. Or move /var/www/html into chroot, and make a symbolic link
+  outside.
+
+Step 3: prepare a sudo config file:
+
+```sh
+cat >/etc/sudoers.d/www-run-with-chroot <<EOF
+www-data ALL=(root) NOPASSWD: /usr/sbin/chroot
+EOF
+```
+
+Now everything is ready, add following section to your nginx/angie:
+
+```conf
+location /cgi-bin {
+    cgi on;
+    cgi_interpreter /usr/sbin/chroot /var/www/chroot;
+}
+```
+
+try it:
+
+```sh
+curl 127.0.0.1/cgi-bin/ls.sh
+```
+
+Notes: It's really complex to setup a chroot environment. And since chroot is
+not really secure, it looks it's really not worth to do it. If you really cares
+about security. Maybe you should run CGI scripts in `docker` or `jails`.
+
+### How can I run CGI scripts with docker
+
+In this example, I assume you're using `/var/www/html` as the document root.
+
+Prepare a hello.sh CGI script first:
+
+```sh
+mkdir -p /var/www/html/cgi-bin
+cat > /var/www/html/cgi-bin/ls.sh <<EOF
+#!/bin/sh
+echo "Status: 200"
+echo "Content-Type: text-plain"
+echo
+echo "files under /:"
+ls /
+EOF
+chmod +x /var/www/html/cgi-bin/ls.sh
+
+# try it
+/var/www/html/cgi-bin/ls.sh
+```
+
+Create a container and keep running in the background:
+
+```sh
+# Change -v if necessary
+# -d: runs background
+# -i -t: keep a terminal
+# --restart always: keep container alive
+docker run -dit --restart always --name my_cgi_docker -v /var/www:/var/www busybox sh
+
+# try it
+docker exec my_cgi_docker /var/www/html/cgi-bin/ls.sh
+```
+
+Allow `www-data` to run `docker` commands:
+
+```sh
+sudo usermod -aG docker www-data
+
+# try it
+sudo -u www-data docker exec my_cgi_docker /var/www/html/cgi-bin/ls.sh
+```
+
+Now everything is ready, add following section to your nginx/angie:
+
+```conf
+location /cgi-bin {
+    cgi on;
+    cgi_interpreter /usr/bin/docker exec my_cgi_docker;
+}
+```
+
+### I want create a long-run background process
 
 Just make sure not to inherit `stdout` when creating the process (ideally, avoid
 inheriting `stdin` and `stderr` as well). Here's an example write in shell.
