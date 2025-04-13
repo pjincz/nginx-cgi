@@ -1,3 +1,9 @@
+nginx-cgi (0.12.1) stable; urgency=medium
+
+  * Fixed an http hanging problem when `Status` header appears in CGI output
+
+ -- Chizhong Jin <pjincz@gmail.com>  Mon, 14 Apr 2025 07:38:47 +0800
+
 nginx-cgi (0.12) stable; urgency=medium
 
   * Added `cgi_timeout` option
