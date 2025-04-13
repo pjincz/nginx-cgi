@@ -378,9 +378,9 @@ chmod +x /var/www/html/cgi-bin/ls.sh
 Step 1: prepare a chroot directory.
 
 That're a lot of ways to do this step. `debootstrap` is a popular way on debian
-based system. `busybox` is the most light way. `docker` is the modern way.
+based system. `busybox` is the most light way. `docker` is a modern way.
 
-Let's make a lightest directory by busybox here:
+Let's make a lightest directory with `busybox` here:
 
 ```sh
 # In this example, I put everything to /var/www/chroot
@@ -415,17 +415,32 @@ ls /var/www/chroot/var/www/html
 Notice:
 
 * I use a trick here, after chroot, the document root is still the same. By this
-  we can same sometime to do path mapping.
+  we can same some time to do path mapping.
 
-* The mount directory will not persist after a reboot. You may need add an entry
-  to /etc/fstab. Or move /var/www/html into chroot, and make a symbolic link
+* The mounting will not persist after a reboot. You may need to add an entry to
+  /etc/fstab. Or move /var/www/html into chroot, and make a symbolic link
   outside.
 
-Step 3: prepare a sudo config file:
+Step 3: Add an interpreter to run script with `chroot`
+
+**Important notice**: You may want to allow `www-data` to run `chroot` with
+`sudo` here. **DONT'T DO IT**. It will introduce an serious security issue.
+Every CGI will be able to run `sudo chroot / ...` to escalate to root.
+
+```sh
+cat >/var/www/chroot-run.sh <<EOF
+#!/bin/sh
+
+exec chroot /var/www/chroot "\$@"
+EOF
+chmod +x /var/www/chroot-run.sh
+```
+
+Step 4: allow `www-data` to run `chroot-run.sh` with root permission.
 
 ```sh
 cat >/etc/sudoers.d/www-run-with-chroot <<EOF
-www-data ALL=(root) NOPASSWD: /usr/sbin/chroot
+www-data ALL=(root) NOPASSWD: /var/www/chroot-run.sh
 EOF
 ```
 
@@ -434,7 +449,7 @@ Now everything is ready, add following section to your nginx/angie:
 ```conf
 location /cgi-bin {
     cgi on;
-    cgi_interpreter /usr/sbin/chroot /var/www/chroot;
+    cgi_interpreter /usr/bin/sudo /var/www/chroot-run.sh;
 }
 ```
 
