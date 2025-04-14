@@ -511,7 +511,7 @@ location /cgi-bin {
 
 Okay, you're a fun of FreeBSD? Me too.
 
-It's really similar to run scripts with `jails`.
+It's really similar to run scripts with `chroot`.
 
 Here I assume you're using `/var/www/html` as the document root too.
 
@@ -554,6 +554,10 @@ www-jail {
     path = "/var/www/jail";
     host.hostname = "www-jail.local";
 
+    exec.clean;
+    exec.start = "/bin/sh /etc/rc";
+    exec.stop = "/bin/sh /etc/rc.shutdown";
+
     # mount /var/www/html => /var/www/jail/var/www/html
     exec.prestart += "mount_nullfs /var/www/html /var/www/jail/var/www/html || true";
     mount.devfs;
@@ -563,9 +567,8 @@ www-jail {
     # ip6 = inherit;
     # exec.prestart += "mount_nullfs /etc/resolv.conf /var/www/jail/etc/resolv.conf || true";
 
-    exec.start = "/bin/sh /etc/rc";
-    exec.stop = "/bin/sh /etc/rc.shutdown";
-    exec.clean;
+    # uncomment fowlling lines, if you also want `ping` available in jail
+    # allow.raw_sockets = 1;
 
     persist; # keep jail if no process runs
 }
