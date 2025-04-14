@@ -421,26 +421,12 @@ Notice:
   /etc/fstab. Or move /var/www/html into chroot, and make a symbolic link
   outside.
 
-Step 3: Add an interpreter to run script with `chroot`
-
-**Important notice**: You may want to allow `www-data` to run `chroot` with
-`sudo` here. **DONT'T DO IT**. It will introduce an serious security issue.
-Every CGI will be able to run `sudo chroot / ...` to escalate to root.
-
-```sh
-cat >/var/www/chroot-run.sh <<EOF
-#!/bin/sh
-
-exec chroot /var/www/chroot "\$@"
-EOF
-chmod +x /var/www/chroot-run.sh
-```
-
-Step 4: allow `www-data` to run `chroot-run.sh` with root permission.
+Step 3: allow `www-data` to run `chroot` with root permission.
 
 ```sh
 cat >/etc/sudoers.d/www-run-with-chroot <<EOF
-www-data ALL=(root) NOPASSWD: /var/www/chroot-run.sh
+# allow and only allow www-data run chroot with /var/www/chroot
+www-data ALL=(root) NOPASSWD: /usr/sbin/chroot /var/www/chroot *
 EOF
 ```
 
@@ -449,7 +435,7 @@ Now everything is ready, add following section to your nginx/angie:
 ```conf
 location /cgi-bin {
     cgi on;
-    cgi_interpreter /usr/bin/sudo /var/www/chroot-run.sh;
+    cgi_interpreter /usr/bin/sudo /usr/sbin/chroot /var/www/chroot;
 }
 ```
 
