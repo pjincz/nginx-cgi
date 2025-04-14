@@ -366,7 +366,7 @@ If you still want `chroot`, okay let me show you how to do it.
 
 In this example, I assume you're using `/var/www/html` as the document root.
 
-Prepare a hello.sh CGI script first:
+Prepare a CGI script first:
 
 ```sh
 mkdir -p /var/www/html/cgi-bin
@@ -458,7 +458,7 @@ curl 127.0.0.1/cgi-bin/ls.sh
 
 In this example, I assume you're using `/var/www/html` as the document root.
 
-Prepare a hello.sh CGI script first:
+Prepare a CGI script first:
 
 ```sh
 mkdir -p /var/www/html/cgi-bin
@@ -515,7 +515,7 @@ It's really similar to run scripts with `jails`.
 
 Here I assume you're using `/var/www/html` as the document root too.
 
-Prepare a hello.sh CGI script first:
+Prepare a CGI script first:
 
 ```sh
 mkdir -p /var/www/html/cgi-bin
@@ -542,8 +542,9 @@ mkdir -p /var/www/jail && cd /var/www/jail
 fetch https://download.freebsd.org/ftp/releases/$(uname -m)/$(uname -m)/$(uname -r)/base.txz
 tar -xvf base.txz -C .
 
-# create mount point
+# create mount points
 mkdir -p /var/www/jail/var/www/html
+touch /var/www/jail/etc/resolv.conf
 ```
 
 Put following config to `/etc/jail.conf`:
@@ -554,9 +555,13 @@ www-jail {
     host.hostname = "www-jail.local";
 
     # mount /var/www/html => /var/www/jail/var/www/html
-    exec.prestart += "mount_nullfs /var/www/html /var/www/jail/var/www/html";
-    exec.poststop += "umount /var/www/jail/var/www/html";
+    exec.prestart += "mount_nullfs /var/www/html /var/www/jail/var/www/html || true";
     mount.devfs;
+
+    # uncomment following lines, if you want to allow network access in jail
+    # ip4 = inherit;
+    # ip6 = inherit;
+    # exec.prestart += "mount_nullfs /etc/resolv.conf /var/www/jail/etc/resolv.conf || true";
 
     exec.start = "/bin/sh /etc/rc";
     exec.stop = "/bin/sh /etc/rc.shutdown";
@@ -612,10 +617,6 @@ try it:
 ```sh
 curl 127.0.0.1/cgi-bin/ls.sh
 ```
-
-Notes: a default jail even has no network access permssion. It's really a jail!
-I didn't cover how to add network support of jails here. Because it's another
-complex topic.
 
 ### I want create a long-run background process
 
