@@ -511,7 +511,7 @@ location /cgi-bin {
 
 Okay, you're a fun of FreeBSD? Me too.
 
-It's really similar to run scripts with `chroot`.
+It's really similar to run scripts with `jails`.
 
 Here I assume you're using `/var/www/html` as the document root too.
 
@@ -613,8 +613,8 @@ try it:
 curl 127.0.0.1/cgi-bin/ls.sh
 ```
 
-Notes: a default jail even has no network access permssion. It's really a jail! I
-didn't cover how to add network support of jails here. Because it's another
+Notes: a default jail even has no network access permssion. It's really a jail!
+I didn't cover how to add network support of jails here. Because it's another
 complex topic.
 
 ### I want create a long-run background process
