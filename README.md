@@ -350,10 +350,19 @@ www-data ALL=(root) NOPASSWD: SETENV: /var/www/html/cgi-bin/*
 
 ### How can I run CGI scripts with chroot
 
-Compared to sudo, chroot is much harder. Because chroot was not originally
-designed as a security mechanism. I'd like to use `docker` or `jails` for this
-purpose. But that's okay, if you really want `chroot`. Let me show you how to do
-it.
+It's highly not recommanded to run CGI script with chroot. Because chroot is not
+designed for security purpose. It still shared a lot of kernel spaces with host
+system. For example, run `ps -ef` in chrooted process, all processes in host
+system will return. That sould not too aweful? No, that's really terrible,
+because you can also do `kill` in chrooted script for the same reason. And
+people normally run programs with root permission in chrooted environment.
+That's terribly bad. It causes system on high risk than just run script with
+`www-data`.
+
+If you want a sandbox environment, `lxc`, `docker` and `jails` are much better
+for this purpose.
+
+If you still want `chroot`, okay let me show you how to do it.
 
 In this example, I assume you're using `/var/www/html` as the document root.
 
@@ -445,10 +454,6 @@ try it:
 curl 127.0.0.1/cgi-bin/ls.sh
 ```
 
-Notes: It's really complex to setup a chroot environment. And since chroot is
-not really secure, it looks it's really not worth to do it. If you really cares
-about security. Maybe you should run CGI scripts in `docker` or `jails`.
-
 ### How can I run CGI scripts with docker
 
 In this example, I assume you're using `/var/www/html` as the document root.
@@ -501,6 +506,116 @@ location /cgi-bin {
     cgi_interpreter /usr/bin/docker exec my_cgi_docker;
 }
 ```
+
+### How can I run CGI scripts with jails
+
+Okay, you're a fun of FreeBSD? Me too.
+
+It's really similar to run scripts with `chroot`.
+
+Here I assume you're using `/var/www/html` as the document root too.
+
+Prepare a hello.sh CGI script first:
+
+```sh
+mkdir -p /var/www/html/cgi-bin
+cat > /var/www/html/cgi-bin/ls.sh <<EOF
+#!/bin/sh
+echo "Status: 200"
+echo "Content-Type: text-plain"
+echo
+echo "files under /:"
+ls /
+EOF
+chmod +x /var/www/html/cgi-bin/ls.sh
+
+# try it
+/var/www/html/cgi-bin/ls.sh
+```
+
+Step 1: create a jail
+
+Let's put the jail to `/var/www/jail`.
+
+```sh
+mkdir -p /var/www/jail && cd /var/www/jail
+fetch https://download.freebsd.org/ftp/releases/$(uname -m)/$(uname -m)/$(uname -r)/base.txz
+tar -xvf base.txz -C .
+
+# create mount point
+mkdir -p /var/www/jail/var/www/html
+```
+
+Put following config to `/etc/jail.conf`:
+
+```conf
+www-jail {
+    path = "/var/www/jail";
+    host.hostname = "www-jail.local";
+
+    # mount /var/www/html => /var/www/jail/var/www/html
+    exec.prestart += "mount_nullfs /var/www/html /var/www/jail/var/www/html";
+    exec.poststop += "umount /var/www/jail/var/www/html";
+    mount.devfs;
+
+    exec.start = "/bin/sh /etc/rc";
+    exec.stop = "/bin/sh /etc/rc.shutdown";
+    exec.clean;
+
+    persist; # keep jail if no process runs
+}
+```
+
+And ensure that following line appears in `/etc/rc.conf`:
+
+```conf
+jail_enable="YES"
+```
+
+And start the jail:
+
+```sh
+service jail start www-jail
+
+# try it
+jexec www-jail ls /
+jexec www-jail /var/www/html/cgi-bin/ls.sh
+```
+
+Step 2: allow `www` to run `jexec` with root permission.
+
+I uses `sudo` here. I'm not familiar with `doas`, if you prefer `doas` you can
+try it yourself. Anyhow, neither `sudo` nor `doas` preloaded with FreeBSD. You
+need to manually install one of them.
+
+```sh
+cat >/usr/local/etc/sudoers.d/www-jexec <<EOF
+# allow and only allow `www` run `jexec` with `www-jail`
+www ALL=(root) NOPASSWD: /usr/sbin/jexec www-jail *
+EOF
+
+# try it
+sudo -u www sudo jexec www-jail /var/www/html/cgi-bin/ls.sh
+```
+
+Now everything is ready, add following section to your nginx/angie:
+
+```conf
+location /cgi-bin {
+    cgi on;
+    cgi_interpreter /usr/local/bin/sudo /usr/sbin/jexec www-jail;
+}
+```
+
+try it:
+
+```sh
+curl 127.0.0.1/cgi-bin/ls.sh
+```
+
+Notes: a default jail even has no network access permssion. It's really a jail! I
+didn't cover how to add network support of jails here. Because it's another
+complex topic.
 
 ### I want create a long-run background process
 
