@@ -39,7 +39,7 @@ I created a discord channel. If:
 * If you want to get update of nginx-cgi
 * If you want to know more friends
 
-Please join us: <https://discord.gg/DVwbbt9k>.
+Please join us: <https://discord.gg/EJSfqHHmaR>.
 
 ## Quick start (with Debian 12+, Ubuntu 24.04+)
 
