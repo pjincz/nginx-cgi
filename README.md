@@ -344,7 +344,7 @@ Here's an example of sudo config file:
 # allow wwww-data run /var/www/bin/my-danger-script with root account
 www-data ALL=(root) NOPASSWD: /var/www/bin/my-danger-script
 
-# allow all CGI script be luanched with sudo by nginx-cgi directly
+# allow all CGI script be launched with sudo by nginx-cgi directly
 www-data ALL=(root) NOPASSWD: SETENV: /var/www/html/cgi-bin/*
 ```
 
