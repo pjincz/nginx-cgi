@@ -509,9 +509,9 @@ location /cgi-bin {
 
 ### How can I run CGI scripts with jails
 
-Okay, you're a fun of FreeBSD? Me too.
+Okay, you're a fan of FreeBSD? Me too.
 
-It's really similar to run scripts with `chroot`.
+It's really similar to running scripts with `chroot`.
 
 Here I assume you're using `/var/www/html` as the document root too.
 
