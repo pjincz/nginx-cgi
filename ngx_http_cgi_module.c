@@ -77,7 +77,9 @@ typedef struct {
 
 typedef struct ngx_http_cgi_loc_conf_s {
     ngx_flag_t                       enabled;
-    ngx_http_complex_value_t        *script;
+
+    ngx_array_t                     *script;       // array<ngx_http_complex_value_t>
+
     ngx_array_t                     *interpreter;  // array<ngx_http_complex_value_t>
     ngx_http_complex_value_t        *working_dir;
     ngx_flag_t                       body_only;
@@ -128,10 +130,10 @@ typedef struct ngx_http_cgi_ctx_s {
     ngx_http_core_loc_conf_t      *clcf;
     ngx_http_cgi_loc_conf_t       *conf;
 
-    // script: path to cgi script
+    // script: cgi script with argv
     // path_info: subpath under script, see rfc3875 4.1.5
     // path_translated: translated subpath, see rfc3875 4.1.6
-    ngx_str_t                      script;      // c compatible
+    ngx_array_t                   *script;      // array<char*> with tail null
     ngx_str_t                      path_info;
     ngx_str_t                      remote_host;
 
@@ -189,7 +191,7 @@ static ngx_command_t  ngx_http_cgi_commands[] = {
     // Default: off
     {
         ngx_string("cgi"),
-        NGX_HTTP_LOC_CONF | NGX_HTTP_SRV_CONF | NGX_CONF_TAKE12,
+        NGX_HTTP_LOC_CONF | NGX_HTTP_SRV_CONF | NGX_CONF_1MORE,
         ngx_http_cgi_set_cgi,
         NGX_HTTP_LOC_CONF_OFFSET,
         0,
@@ -199,7 +201,7 @@ static ngx_command_t  ngx_http_cgi_commands[] = {
     // Alias of `cgi pass`
     {
         ngx_string("cgi_pass"),
-        NGX_HTTP_LOC_CONF | NGX_HTTP_SRV_CONF | NGX_CONF_TAKE1,
+        NGX_HTTP_LOC_CONF | NGX_HTTP_SRV_CONF | NGX_CONF_1MORE,
         ngx_http_cgi_set_cgi,
         NGX_HTTP_LOC_CONF_OFFSET,
         0,
@@ -888,6 +890,7 @@ ngx_http_cgi_child_proc(
 static ngx_int_t
 ngx_http_cgi_locate_script(ngx_http_cgi_ctx_t *ctx) {
     ngx_http_request_t        *r = ctx->r;
+    ngx_str_t                  script;
     ngx_file_info_t            script_info;
     int                        uri_remaining = 0;
     size_t                     root_len;
@@ -916,48 +919,60 @@ ngx_http_cgi_locate_script(ngx_http_cgi_ctx_t *ctx) {
         }
     }
 
-    if (!ngx_http_map_uri_to_path(r, &ctx->script, &root_len, 0))
+    if (!ngx_http_map_uri_to_path(r, &script, &root_len, 0))
     {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
     // ngx_http_map_uri_to_path returns contains an extra `0` for c compatiblity
     // let's remove it here
-    if (ctx->script.len > 0 && ctx->script.data[ctx->script.len - 1] == 0) {
-        ctx->script.len -= 1;
+    if (script.len > 0 && script.data[script.len - 1] == 0) {
+        script.len -= 1;
     }
 
     for (;;) {
         // convert string to c string
-        ctx->script.data[ctx->script.len] = 0;
+        script.data[script.len] = 0;
 
-        if (ngx_file_info(ctx->script.data, &script_info) == -1) {
-            ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
-                        "stat \"%V\" failed", &ctx->script);
+        if (ngx_file_info(script.data, &script_info) == -1) {
             if (ngx_errno == EACCES) {
                 return NGX_HTTP_FORBIDDEN;
             } else if (ngx_errno == ENOTDIR) {
                 // remove a level from script path
-                while (_ngx_str_last_ch(ctx->script) != '/') {
-                    ctx->script.len -= 1;
+                while (_ngx_str_last_ch(script) != '/') {
+                    script.len -= 1;
                     uri_remaining += 1;
                 }
-                while (_ngx_str_last_ch(ctx->script) == '/') {
-                    ctx->script.len -= 1;
+                while (_ngx_str_last_ch(script) == '/') {
+                    script.len -= 1;
                     uri_remaining += 1;
                 }
-                if (ctx->script.len <= root_len) {
+                if (script.len <= root_len) {
                     return NGX_HTTP_INTERNAL_SERVER_ERROR;
                 } else {
                     continue;
                 }
             } else if (ngx_errno == ENOENT) {
                 return NGX_HTTP_NOT_FOUND;
+            } else {
+                ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
+                        "stat \"%V\" failed", &script);
+                return NGX_HTTP_INTERNAL_SERVER_ERROR;
             }
-            return NGX_HTTP_INTERNAL_SERVER_ERROR;
         } else {
             break;
         }
     }
+    if (!ngx_is_file(&script_info)) {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                "run cgi \"%V\" failed, not regular file", &script);
+        return NGX_HTTP_NOT_FOUND;
+    }
+
+    ctx->script = ngx_array_create(ctx->r->pool, 1, sizeof(char*));
+    if (ctx->script == NULL) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+    *(u_char**)ngx_array_push(ctx->script) = script.data;
 
     if (uri_remaining > 0) {
         ctx->path_info.data = r->uri.data + r->uri.len - uri_remaining;
@@ -966,13 +981,7 @@ ngx_http_cgi_locate_script(ngx_http_cgi_ctx_t *ctx) {
 
     ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "cgi script path: %V, path_info: %V",
-                   &ctx->script, &ctx->path_info);
-
-    if (!ngx_is_file(&script_info)) {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                "run cgi \"%V\" failed, not regular file", &ctx->script);
-        return NGX_HTTP_NOT_FOUND;
-    }
+                   &script, &ctx->path_info);
 
     return NGX_OK;
 }
@@ -980,8 +989,10 @@ ngx_http_cgi_locate_script(ngx_http_cgi_ctx_t *ctx) {
 
 static ngx_int_t
 ngx_http_cgi_prepare_cmd(ngx_http_cgi_ctx_t *ctx) {
-    int cmd_list_size = ctx->conf->interpreter ?
-            ctx->conf->interpreter->nelts + 2 : 2;
+    int cmd_list_size =
+        (ctx->conf->interpreter ? ctx->conf->interpreter->nelts : 0) +
+        ctx->script->nelts +
+        1;  // tail zero
 
     ctx->cmd = ngx_array_create(ctx->r->pool, cmd_list_size, sizeof(char*));
     if (ctx->cmd == NULL) {
@@ -1002,10 +1013,12 @@ ngx_http_cgi_prepare_cmd(ngx_http_cgi_ctx_t *ctx) {
         }
     }
 
-    *(u_char**)ngx_array_push(ctx->cmd) = ctx->script.data;
+    for (size_t i = 0; i < ctx->script->nelts; ++i) {
+        *(char**)ngx_array_push(ctx->cmd) = ((char **)ctx->script->elts)[i];
+    }
 
     // an extra NULL string, required by exec
-    *(u_char**)ngx_array_push(ctx->cmd) = NULL;
+    *(char**)ngx_array_push(ctx->cmd) = NULL;
 
     return NGX_OK;
 }
@@ -1328,7 +1341,7 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
     _add_env_str(ctx, "SCRIPT_NAME",
                  (char*)r->uri.data, r->uri.len - ctx->path_info.len);
 
-    _add_env_nstr(ctx, "SCRIPT_FILENAME", &ctx->script);
+    _add_env_str(ctx, "SCRIPT_FILENAME", ((char**)ctx->script->elts)[0], -1);
 
     if (local_addr_len > 0) {
         _add_env_addr(
@@ -2861,9 +2874,9 @@ done:
 
 static void
 ngx_http_cgi_handler_async(ngx_http_request_t *r) {
-    ngx_int_t            rc;
-    ngx_http_cgi_ctx_t  *ctx;
-    ngx_http_cleanup_t  *cln;
+    ngx_int_t            rc = NGX_OK;
+    ngx_http_cgi_ctx_t  *ctx = NULL;
+    ngx_http_cleanup_t  *cln = NULL;
 
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "http cgi handle init");
@@ -2911,14 +2924,35 @@ ngx_http_cgi_handler_async(ngx_http_request_t *r) {
     }
 
     if (ctx->conf->script) {
-        rc = ngx_http_complex_value(ctx->r, ctx->conf->script, &ctx->script);
-        if (rc == NGX_OK) {
-            ctx->path_info = r->uri;
+        assert(ctx->conf->script);
+        assert(ctx->conf->script->nelts > 0);
 
-            ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
-                "cgi script path: %V, path_info: %V",
-                &ctx->script, &ctx->path_info);
+        int narg = ctx->conf->script->nelts;
+        ngx_http_complex_value_t *args = ctx->conf->script->elts;
+
+        ctx->script = ngx_array_create(ctx->r->pool, narg, sizeof(char*));
+        if (ctx->script == NULL) {
+            rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+            goto done;
         }
+
+        for (int i = 0; i < narg; ++i) {
+            ngx_str_t arg;
+            if (ngx_http_complex_value(ctx->r, &args[i], &arg) != NGX_OK) {
+                ngx_log_error(NGX_LOG_ERR, ctx->r->connection->log, 0,
+                    "failed to generate script path and argv");
+                rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+                goto done;
+            }
+            *(u_char**)ngx_array_push(ctx->script) = arg.data;
+        }
+
+        ctx->path_info = r->uri;
+
+        ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+            "cgi script path: %s, path_info: %V",
+            ((char**)ctx->script->elts)[0], &ctx->path_info);
+
     } else {
         rc = ngx_http_cgi_locate_script(ctx);
     }
@@ -2998,7 +3032,7 @@ ngx_http_cgi_set_cgi(ngx_conf_t *cf, ngx_command_t *cmd, void *c) {
     ngx_flag_t is_on = 0;
     ngx_flag_t is_off = 0;
     ngx_flag_t is_pass = 0;
-    ngx_str_t script_path;
+    int script_arg_pos = -1;
 
     if (ngx_strcasecmp(args[0].data, (u_char *)"cgi") == 0) {
         if (ngx_strcasecmp(args[1].data, (u_char *)"on") == 0) {
@@ -3008,16 +3042,14 @@ ngx_http_cgi_set_cgi(ngx_conf_t *cf, ngx_command_t *cmd, void *c) {
             if (narg != 2) { return NGX_CONF_ERROR; }
             is_off = 1;
         } else if (ngx_strcasecmp(args[1].data, (u_char *)"pass") == 0) {
-            if (narg != 3) { return NGX_CONF_ERROR; }
             is_pass = 1;
-            script_path = args[2];
+            script_arg_pos = 2;
         } else {
             return NGX_CONF_ERROR;
         }
     } else if (ngx_strcasecmp(args[0].data, (u_char *)"cgi_pass") == 0) {
-        if (narg != 2) { return NGX_CONF_ERROR; }
         is_pass = 1;
-        script_path = args[1];
+        script_arg_pos = 1;
     } else {
         return NGX_CONF_ERROR;
     }
@@ -3028,13 +3060,28 @@ ngx_http_cgi_set_cgi(ngx_conf_t *cf, ngx_command_t *cmd, void *c) {
         conf->enabled = 1;
         conf->script = ngx_palloc(cf->pool, sizeof(*conf->script));
 
-        ngx_http_compile_complex_value_t ccv = {0};
-        ccv.cf = cf;
-        ccv.value = &script_path;
-        ccv.complex_value = conf->script;
-        ccv.zero = 1;
-        if (ngx_http_compile_complex_value(&ccv) != NGX_OK) {
+        conf->script = ngx_array_create(
+                cf->pool, cf->args->nelts - 1,
+                sizeof(ngx_http_complex_value_t));
+        if (conf->script == NULL) {
             return NGX_CONF_ERROR;
+        }
+
+        for (uint i = script_arg_pos; i < cf->args->nelts; ++i) {
+            ngx_http_complex_value_t *cv = ngx_array_push(conf->script);
+            if (cv == NULL) {
+                return NGX_CONF_ERROR;
+            }
+
+            ngx_http_compile_complex_value_t ccv = {0};
+            ccv.cf = cf;
+            ccv.value = &args[i];
+            ccv.complex_value = cv;
+            ccv.zero = 1;  // indicate CC to generate C safe string
+
+            if (ngx_http_compile_complex_value(&ccv) != NGX_OK) {
+                return NGX_CONF_ERROR;
+            }
         }
     }
 

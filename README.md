@@ -760,7 +760,7 @@ from environment var, and read request body from `stdin`, and write output to
 
 ### Options
 
-#### `cgi <on|off>` or `cgi pass <script_path>`
+#### `cgi <on|off>` or `cgi pass <script_path> [script_args...]`
 
 Enable or disable cgi module on giving location block.
 
@@ -775,10 +775,13 @@ plugin will skip the step to locate the CGI script. It uses the the value you
 provided directly. You can references nginx variables in the second argument,
 eg: `cgi pass $document_root$uri`. The aboving example do something similar to
 rfc3875, but not equal. In this form, request uri will be assigned to
-`PATH_INFO` directly. And `SCRIPT_NAME` will be empty.
+`PATH_INFO` directly. And `SCRIPT_NAME` will be empty. This form is really good
+for dynamic content generating. It gets around the complex and unnecessary uri
+re-writing.
 
-The second form is really good for dynamic content generating. It gets around
-the complex and unnecessary uri re-writing.
+Additionally, the second form also provides you the ability to pass additional
+args to script, eg: `cgi pass my_script.sh $uri`. With this, you can totally
+avoid confusing rfc3875 environment variables.
 
 If you specify `off` here, the plugin will be disabled.
 
