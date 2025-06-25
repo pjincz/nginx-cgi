@@ -27,19 +27,11 @@ fi
 
 OS="$(uname -s)"
 
+SYSTEM_SUPPORT_ASAN=0
 if [ "$OS" = "Linux" ]; then
     SYSTEM_SUPPORT_ASAN=1
-elif [ "$OS" = "Darwin" ]; then
-    # Mac supports ASAN. But test hangs with ASAN on, need more investigate
-    SYSTEM_SUPPORT_ASAN=0
 elif [ "$OS" = "FreeBSD" ]; then
     SYSTEM_SUPPORT_ASAN=1
-elif [ "$OS" = "OpenBSD" ]; then
-    SYSTEM_SUPPORT_ASAN=0
-elif [ "$OS" = "SunOS" ]; then
-    SYSTEM_SUPPORT_ASAN=0
-else
-    SYSTEM_SUPPORT_ASAN=0
 fi
 
 WITH_ASAN="${WITH_ASAN:-$SYSTEM_SUPPORT_ASAN}"
