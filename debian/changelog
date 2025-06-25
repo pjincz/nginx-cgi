@@ -1,3 +1,9 @@
+nginx-cgi (0.13) stable; urgency=medium
+
+  * Allow `cgi pass` carries script argv.
+
+ -- Chizhong Jin <pjincz@gmail.com>  Wed, 25 Jun 2025 11:21:06 +0800
+
 nginx-cgi (0.12.1) stable; urgency=medium
 
   * Fixed an http hanging problem when `Status` header appears in CGI output
