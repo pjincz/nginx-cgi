@@ -271,7 +271,7 @@ echo "query string: $QUERY_STRING"
 echo "http accept: $HTTP_ACCEPT"
 ```
 
-For full list of environment variables, see environment session.
+For full list of environment variables, see environment section.
 
 ### Request body
 
