@@ -156,8 +156,7 @@ typedef struct ngx_http_cgi_ctx_s {
     ngx_flag_t                     header_ready;
 
     ngx_flag_t                     has_body;
-    ngx_chain_t                   *cache;  // body sending cache
-    ngx_chain_t                   *cache_tail;  // body sending cache
+    ngx_chain_t                   *body_cache;  // body sending cache
 
     ngx_event_t                    timer;
 } ngx_http_cgi_ctx_t;
@@ -1971,8 +1970,11 @@ ngx_http_cgi_append_to_header_buf(ngx_http_cgi_ctx_t *ctx,
 
 
 static ngx_int_t
-ngx_http_cgi_append_body(ngx_http_cgi_ctx_t *ctx, u_char *buf, u_char *buf_end)
+ngx_http_cgi_set_body_cache(
+    ngx_http_cgi_ctx_t *ctx, u_char *buf, u_char *buf_end)
 {
+    assert(!ctx->body_cache);
+
     ngx_http_request_t *r = ctx->r;
     ngx_buf_t          *tmp;
 
@@ -1987,18 +1989,13 @@ ngx_http_cgi_append_body(ngx_http_cgi_ctx_t *ctx, u_char *buf, u_char *buf_end)
 
     tmp->last = ngx_cpymem(tmp->pos, buf, buf_end - buf);
 
-    if (ctx->cache_tail) {
-        ctx->cache_tail->next = ngx_alloc_chain_link(r->pool);
-        ctx->cache_tail = ctx->cache_tail->next;
-    } else {
-        ctx->cache = ctx->cache_tail = ngx_alloc_chain_link(r->pool);
-    }
-    if (!ctx->cache_tail) {
+    ctx->body_cache = ngx_alloc_chain_link(r->pool);
+    if (!ctx->body_cache) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
-    ctx->cache_tail->buf = tmp;
-    ctx->cache_tail->next = NULL;
+    ctx->body_cache->buf = tmp;
+    ctx->body_cache->next = NULL;
     ctx->has_body = 1;
     return NGX_OK;
 }
@@ -2052,7 +2049,7 @@ ngx_http_cgi_add_output(ngx_http_cgi_ctx_t *ctx,
                     return rc;
                 }
                 // move the remain data from header to body
-                return ngx_http_cgi_append_body(ctx, tmp_ptr, buf_end);
+                return ngx_http_cgi_set_body_cache(ctx, tmp_ptr, buf_end);
             } else if (rc == NGX_HTTP_PARSE_INVALID_HEADER) {
                 str.data = ctx->header_scan.header_name_start;
                 str.len = ctx->header_scan.header_end -
@@ -2065,7 +2062,7 @@ ngx_http_cgi_add_output(ngx_http_cgi_ctx_t *ctx,
             }
         }
     } else {
-        return ngx_http_cgi_append_body(ctx, buf, buf_end);
+        return ngx_http_cgi_set_body_cache(ctx, buf, buf_end);
     }
 }
 
@@ -2075,21 +2072,36 @@ ngx_http_cgi_calc_content_length(ngx_http_cgi_ctx_t *ctx) {
     ngx_chain_t *it;
     ngx_int_t    len = 0;
 
-    for (it = ctx->cache; it; it = it->next) {
+    for (it = ctx->body_cache; it; it = it->next) {
         len += it->buf->end - it->buf->start;
     }
 
     return len;
 }
 
+
+static ngx_chain_t *
+_ngx_pfree_chain_node(ngx_pool_t *pool, ngx_chain_t *chain) {
+    if (!chain) {
+        return NULL;
+    }
+    if (chain->buf->temporary) {
+        ngx_pfree(pool, chain->buf->start);
+        ngx_pfree(pool, chain->buf);
+    }
+    ngx_chain_t *next = chain->next;
+    ngx_pfree(pool, chain);
+    return next;
+}
+
+
 static ngx_int_t
-ngx_http_cgi_flush(ngx_http_cgi_ctx_t *ctx, ngx_flag_t eof) {
-    ngx_buf_t   *tmp;
+ngx_http_cgi_write_body(ngx_http_cgi_ctx_t *ctx, ngx_flag_t finishing) {
     ngx_chain_t *it;
     ngx_int_t    rc = NGX_OK;
 
     // do nothing, if no pending cache and not finish
-    if (!ctx->cache && !eof) {
+    if (!ctx->body_cache && !finishing) {
         return NGX_OK;
     }
 
@@ -2101,8 +2113,8 @@ ngx_http_cgi_flush(ngx_http_cgi_ctx_t *ctx, ngx_flag_t eof) {
             return NGX_HTTP_INTERNAL_SERVER_ERROR;
         }
 
-        if (eof) {
-            // we didn't send out header yet, but we reaches the eof
+        if (finishing) {
+            // we didn't send out header yet, but we reaches the end
             // we can caculate the content length directly to avoid chunk mode
             ctx->r->headers_out.content_length_n = \
                     ngx_http_cgi_calc_content_length(ctx);
@@ -2110,33 +2122,36 @@ ngx_http_cgi_flush(ngx_http_cgi_ctx_t *ctx, ngx_flag_t eof) {
                 ctx->r->header_only = 1;
             }
         }
+
         rc = ngx_http_send_header(ctx->r);
         if (rc == NGX_ERROR || rc > NGX_OK) {
             return rc;
         }
     }
 
-    if (ctx->has_body && !ctx->cache && eof) {
+    if (ctx->has_body && !ctx->body_cache && finishing) {
         // we have body before, but there's no pending cache here.
         // in this case, we need to send an empty package.
-        ctx->cache = ctx->cache_tail = ngx_alloc_chain_link(ctx->r->pool);
-        tmp = ngx_calloc_buf(ctx->r->pool);
+        ctx->body_cache = ngx_alloc_chain_link(ctx->r->pool);
+        ngx_buf_t *tmp = ngx_calloc_buf(ctx->r->pool);
         if (tmp == NULL) {
             return NGX_HTTP_INTERNAL_SERVER_ERROR;
         }
-        ctx->cache_tail->buf = tmp;
-        ctx->cache_tail->next = NULL;
+        ctx->body_cache->buf = tmp;
+        ctx->body_cache->next = NULL;
     }
 
-    if (ctx->cache) {
-        ctx->cache_tail->buf->last_in_chain = 1;
-        ctx->cache_tail->buf->last_buf = eof;
-        for (it = ctx->cache; it; it = it->next) {
+    if (ctx->body_cache) {
+        ctx->body_cache->buf->last_in_chain = 1;
+        ctx->body_cache->buf->last_buf = finishing;
+        for (it = ctx->body_cache; it; it = it->next) {
             it->buf->flush = 1;
         }
-        it = ctx->cache;
-        ctx->cache = ctx->cache_tail = NULL;
-        rc = ngx_http_output_filter(ctx->r, it);
+        rc = ngx_http_output_filter(ctx->r, ctx->body_cache);
+        if (rc == NGX_OK) {
+            ctx->body_cache = _ngx_pfree_chain_node(
+                ctx->r->pool, ctx->body_cache);
+        }
     }
 
     return rc;
@@ -2180,7 +2195,89 @@ ngx_http_cgi_terminate_request(ngx_http_cgi_ctx_t *ctx, ngx_int_t rc) {
 
 
 static void
-ngx_http_cgi_stdin_handler(ngx_event_t *ev) {
+ngx_http_cgi_delay_check_process_callback(ngx_event_t *ev) {
+    ngx_http_cgi_ctx_t  *ctx = ev->data;
+    ngx_int_t            rc = NGX_OK;
+
+    int status = ngx_http_cgi_deref_process(ctx->pid, 1);
+    if (status == -1 || status == 0) {
+        // process manually closed stdout or exited with code 0
+        ngx_http_finalize_request(ctx->r, ngx_http_cgi_write_body(ctx, 1));
+    } else if (status > 0) {
+        // process exited abnormal
+        // 126 and 127 have special meaning in POSIX shell
+        if (status == 127) {
+            rc = NGX_HTTP_NOT_FOUND;
+        } else if (status == 126) {
+            rc = NGX_HTTP_FORBIDDEN;
+        } else {
+            rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+        }
+        ngx_http_cgi_terminate_request(ctx, rc);
+    } else {
+        // should not happen
+        rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+        ngx_http_cgi_terminate_request(ctx, rc);
+    }
+}
+
+
+static void
+ngx_http_cgi_end_request(ngx_http_cgi_ctx_t *ctx) {
+    ngx_int_t rc = NGX_OK;
+    int status = ngx_http_cgi_deref_process(ctx->pid, 0);
+
+    if (status == -1) {
+        // Sometimes, pipe closing event may comes before process finishing,
+        // especially on BSD and Solaris system. Let's do some delay and try
+        // again.
+        //
+        // Depends on my tests, 1ms delay is good enough for most OSes. But
+        // for OpenBSD and Solaris, a delay of 5ms needed to keep unit tests
+        // run for 1day without error. Just to be safe, I set the delay to 2
+        // and 6 here.
+        //
+        // If one day, this plugin has enough users, I will refactor this.
+        // But now, it's good enough, escaping of signal is really far too
+        // complex here.
+#if (__OpenBSD__ || __sun__)
+        int delay = 6;
+#else
+        int delay = 2;
+#endif
+        if (ctx->timer.timer_set) {
+            ngx_del_timer(&ctx->timer);
+        }
+        ctx->timer.handler = ngx_http_cgi_delay_check_process_callback;
+        ngx_add_timer(&ctx->timer, delay);
+    } else if (status == 0) {
+        // process exited with code 0
+        ngx_http_finalize_request(ctx->r, ngx_http_cgi_write_body(ctx, 1));
+    } else if (status > 0) {
+        // process exited abnormal
+        // 126 and 127 have special meaning in POSIX shell
+        if (status == 127) {
+            rc = NGX_HTTP_NOT_FOUND;
+        } else if (status == 126) {
+            rc = NGX_HTTP_FORBIDDEN;
+        } else {
+            rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+        }
+        ngx_log_error(NGX_LOG_ERR, ctx->r->connection->log, ngx_errno,
+            "cgi process exited with code %d", status);
+        ngx_http_cgi_terminate_request(ctx, rc);
+    } else {
+        // should not happen
+        rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+        ngx_log_error(NGX_LOG_ERR, ctx->r->connection->log, ngx_errno,
+            "ngx_http_cgi_deref_process, status = %d", status);
+        ngx_http_cgi_terminate_request(ctx, rc);
+    }
+}
+
+
+static void
+ngx_http_cgi_stdin_ready_callback(ngx_event_t *ev) {
     ngx_int_t           rc = NGX_OK;
     ngx_connection_t   *c = ev->data;
     ngx_http_cgi_ctx_t *ctx = c->data;
@@ -2200,12 +2297,7 @@ ngx_http_cgi_stdin_handler(ngx_event_t *ev) {
         if (nwrite >= 0) {
             buf->pos += nwrite;
             if (buf->pos == buf->last) {
-                if (buf->temporary) {
-                    ngx_pfree(r->pool, buf);
-                }
-
-                r->request_body->bufs = chain->next;
-                ngx_pfree(r->pool, chain);
+                r->request_body->bufs = _ngx_pfree_chain_node(r->pool, chain);
             }
         } else {
             if (ngx_errno == EAGAIN) {
@@ -2295,13 +2387,13 @@ ngx_http_cgi_is_client_disconnected(ngx_http_cgi_ctx_t *ctx) {
 
 
 static void
-ngx_http_cgi_request_handler(ngx_http_request_t *r) {
+ngx_http_cgi_conn_read_ready_callback(ngx_http_request_t *r) {
     // async request body handler, when invoked, more data comes in
     ngx_http_cgi_ctx_t *ctx;
     ngx_int_t           rc = NGX_OK;
 
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
-                   "ngx_http_cgi_request_handler");
+                   "ngx_http_cgi_conn_read_ready_callback");
 
     ctx = ngx_http_get_module_ctx(r, ngx_http_cgi_module);
     if (ctx == NULL) {
@@ -2322,7 +2414,7 @@ ngx_http_cgi_request_handler(ngx_http_request_t *r) {
     if (ctx->pid > 0) {
         if (ctx->c_stdin) {
             if (ctx->c_stdin->write->ready) {
-                ngx_http_cgi_stdin_handler(ctx->c_stdin->write);
+                ngx_http_cgi_stdin_ready_callback(ctx->c_stdin->write);
             }
         } else {
             // cgi script has closed the stdin, discard remain data
@@ -2350,166 +2442,106 @@ done:
 }
 
 
-static void
-ngx_http_cgi_delay_check_process_handler(ngx_event_t *ev) {
-    ngx_http_cgi_ctx_t  *ctx = ev->data;
-    ngx_int_t            rc = NGX_OK;
+static ngx_int_t
+ngx_http_cgi_handle_stdout(ngx_http_cgi_ctx_t *ctx) {
+    ngx_int_t rc = NGX_OK;
+    ngx_log_t *log = ctx->r->connection->log;
 
-    int status = ngx_http_cgi_deref_process(ctx->pid, 1);
-    if (status == -1 || status == 0) {
-        // process manually closed stdout or exited with code 0
-        rc = ngx_http_cgi_flush(ctx, 1);
-        if (rc != NGX_OK) {
-            goto done;
-        }
-        ngx_http_finalize_request(ctx->r, NGX_OK);
-    } else if (status > 0) {
-        // process exited abnormal
-        // 126 and 127 have special meaning in POSIX shell
-        if (status == 127) {
-            rc = NGX_HTTP_NOT_FOUND;
-        } else if (status == 126) {
-            rc = NGX_HTTP_FORBIDDEN;
+#if (NGX_SOLARIS)
+    int stdout_total_read = 0;
+#endif
+
+    for (;;) {
+        if (!ctx->body_cache && ctx->c_stdout && ctx->c_stdout->read->ready) {
+            ngx_connection_t *c = ctx->c_stdout;
+            u_char buf[65536];
+            ngx_flag_t eof = 0;
+
+            int nread = read(c->fd, buf, sizeof(buf));
+            if (nread > 0) {
+#if (NGX_SOLARIS)
+                stdout_total_read += nread;
+#endif
+                rc = ngx_http_cgi_add_output(ctx, buf, buf + nread);
+                if (rc != NGX_OK) {
+                    ngx_log_error(NGX_LOG_ERR, log, ngx_errno,
+                        "ngx_http_cgi_add_output");
+                    return rc;
+                }
+            } else if (nread == 0) {
+#if (NGX_SOLARIS)
+                eof = stdout_total_read == 0;
+#else
+                eof = 1;
+#endif
+            } else {
+                if (ngx_errno == EAGAIN) {
+                    // wait for more data
+                    c->read->ready = 0;
+                } else {
+                    ngx_log_error(NGX_LOG_ERR, log, ngx_errno,
+                        "read");
+                    rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+                    return rc;
+                }
+            }
+
+            if (eof) {
+                ngx_close_connection(ctx->c_stdout);
+                ctx->c_stdout = NULL;
+            }
+        } else if (ctx->body_cache && ctx->r->connection->write->ready) {
+            rc = ngx_http_cgi_write_body(ctx, 0);
+            if (rc != NGX_OK && rc != NGX_AGAIN) {
+                return rc;
+            }
         } else {
-            rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+            break;
         }
-        goto done;
+    }
+
+    if (ctx->body_cache) {
+        // outcoming blocked
+        rc = ngx_handle_write_event(ctx->r->connection->write, 0);
+            if (rc == NGX_ERROR || rc > NGX_OK) {
+                ngx_log_error(NGX_LOG_ERR, log, ngx_errno,
+                    "ngx_handle_write_event");
+                return rc;
+            }
     } else {
-        // should not happen
+        // run out of incoming
+        if (ctx->c_stdout) {
+            rc = ngx_handle_read_event(ctx->c_stdout->read, 0);
+            if (rc == NGX_ERROR || rc > NGX_OK) {
+                ngx_log_error(NGX_LOG_ERR, log, ngx_errno,
+                    "ngx_handle_read_event");
+                return rc;
+            }
+        } else {
+            // stdout ended, and all cache wrote, time to end request
+            ngx_http_cgi_end_request(ctx);
+        }
+    }
+
+    return NGX_OK;
+}
+
+
+static void
+ngx_http_cgi_conn_write_ready_callback(ngx_http_request_t *r) {
+    ngx_http_cgi_ctx_t *ctx;
+    ngx_int_t           rc = NGX_OK;
+
+    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                   "ngx_http_cgi_conn_write_ready_callback");
+
+    ctx = ngx_http_get_module_ctx(r, ngx_http_cgi_module);
+    if (ctx == NULL) {
         rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
         goto done;
     }
 
-done:
-    if (rc != NGX_OK) {
-        ngx_http_cgi_terminate_request(ctx, rc);
-    }
-}
-
-
-static void
-ngx_http_cgi_stdout_handler(ngx_event_t *ev) {
-    ngx_int_t           rc = NGX_OK;
-    ngx_connection_t   *c = ev->data;
-    ngx_http_cgi_ctx_t *ctx = c->data;
-    ngx_http_request_t *r = ctx->r;
-
-    u_char buf[65536];
-    int total_read = 0, nread = 0;
-    ngx_flag_t eof = 0;
-
-    for (;;) {
-        nread = read(c->fd, buf, sizeof(buf));
-        if (nread > 0) {
-            rc = ngx_http_cgi_add_output(ctx, buf, buf + nread);
-            if (rc != NGX_OK) {
-                ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
-                    "ngx_http_cgi_add_output");
-                goto done;
-            }
-            total_read += nread;
-        } else if (nread == 0) {
-#if (NGX_SOLARIS)
-            // On Solaris, nread == 0 doesn't means eof
-#else
-            eof = 1;
-#endif
-            break;
-        } else {
-            if (ngx_errno == EAGAIN) {
-                // wait for more data, also do nothing here
-                break;
-            } else {
-                ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
-                    "read");
-                rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-                goto done;
-            }
-        }
-    }
-
-#if (NGX_SOLARIS)
-    if (total_read == 0) {
-        eof = 1;
-    }
-#else
-    // Suppress compiler warnings
-    (void)total_read;
-#endif
-
-    if (!eof) {
-        rc = ngx_http_cgi_flush(ctx, 0);
-        if (rc != NGX_OK) {
-            ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
-                "ngx_http_cgi_flush");
-            goto done;
-        }
-        ctx->c_stdout->read->ready = 0;
-        rc = ngx_handle_read_event(ctx->c_stdout->read, 0);
-        if (rc == NGX_ERROR || rc > NGX_OK) {
-            ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
-                "ngx_handle_read_event");
-            goto done;
-        }
-    } else {
-        ngx_close_connection(ctx->c_stdout);
-        ctx->c_stdout = NULL;
-
-        int status = ngx_http_cgi_deref_process(ctx->pid, 0);
-
-        if (status == -1) {
-            // Sometimes, pipe closing event may comes before process finishing,
-            // especially on BSD and Solaris system. Let's do some delay and try
-            // again.
-            //
-            // Depends on my tests, 1ms delay is good enough for most OSes. But
-            // for OpenBSD and Solaris, a delay of 5ms needed to keep unit tests
-            // run for 1day without error. Just to be safe, I set the delay to 2
-            // and 6 here.
-            //
-            // If one day, this plugin has enough users, I will refactor this.
-            // But now, it's good enough, escaping of signal is really far too
-            // complex here.
-#if (__OpenBSD__ || __sun__)
-            int delay = 6;
-#else
-            int delay = 2;
-#endif
-            if (ctx->timer.timer_set) {
-                ngx_del_timer(&ctx->timer);
-            }
-            ctx->timer.handler = ngx_http_cgi_delay_check_process_handler;
-            ngx_add_timer(&ctx->timer, delay);
-        } else if (status == 0) {
-            // process exited with code 0
-            rc = ngx_http_cgi_flush(ctx, 1);
-            if (rc != NGX_OK) {
-                ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
-                    "ngx_http_cgi_flush");
-                goto done;
-            }
-            ngx_http_finalize_request(r, NGX_OK);
-        } else if (status > 0) {
-            // process exited abnormal
-            // 126 and 127 have special meaning in POSIX shell
-            if (status == 127) {
-                rc = NGX_HTTP_NOT_FOUND;
-            } else if (status == 126) {
-                rc = NGX_HTTP_FORBIDDEN;
-            } else {
-                rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-            }
-            ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
-                "ngx_http_cgi_deref_process, status = %d", status);
-            goto done;
-        } else {
-            // should not happen
-            rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-            ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
-                "ngx_http_cgi_deref_process, status = %d", status);
-            goto done;
-        }
-    }
+    rc = ngx_http_cgi_handle_stdout(ctx);
 
 done:
     if (rc != NGX_OK) {
@@ -2519,24 +2551,43 @@ done:
 
 
 static void
-ngx_http_cgi_stderr_handler(ngx_event_t *ev) {
+ngx_http_cgi_stdout_ready_callback(ngx_event_t *ev) {
+    ngx_connection_t   *c = ev->data;
+    ngx_http_cgi_ctx_t *ctx = c->data;
+
+    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, ctx->r->connection->log, 0,
+                   "ngx_http_cgi_stdout_ready_callback");
+
+    ngx_int_t rc = ngx_http_cgi_handle_stdout(ctx);
+    if (rc != NGX_OK) {
+        ngx_http_cgi_terminate_request(ctx, rc);
+    }
+}
+
+
+static void
+ngx_http_cgi_stderr_ready_callback(ngx_event_t *ev) {
     ngx_connection_t   *c = ev->data;
     ngx_http_cgi_ctx_t *ctx = c->data;
     ngx_http_request_t *r = ctx->r;
 
     u_char buf[65536];
-    int total_read = 0, nread = 0;
+#if (NGX_SOLARIS)
+    int total_read = 0;
+#endif
     ngx_flag_t eof = 0;
 
     for (;;) {
-        nread = read(c->fd, buf, sizeof(buf));
+        int nread = read(c->fd, buf, sizeof(buf));
         if (nread > 0) {
             ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
                     "cgi stderr: %*s", nread, buf);
+#if (NGX_SOLARIS)
             total_read += nread;
+#endif
         } else if (nread == 0) {
 #if (NGX_SOLARIS)
-            // On Solaris, nread == 0 doesn't means eof
+            eof = total_read == 0;
 #else
             eof = 1;
 #endif
@@ -2551,15 +2602,6 @@ ngx_http_cgi_stderr_handler(ngx_event_t *ev) {
         }
     }
 
-#if (NGX_SOLARIS)
-    if (total_read == 0) {
-        eof = 1;
-    }
-#else
-    // Suppress compiler warnings
-    (void)total_read;
-#endif
-
     if (!eof) {
         ctx->c_stderr->read->ready = 0;
         ngx_handle_read_event(ctx->c_stderr->read, 0);
@@ -2571,7 +2613,7 @@ ngx_http_cgi_stderr_handler(ngx_event_t *ev) {
 
 
 static void
-ngx_http_cgi_timeout2_handler(ngx_event_t *ev) {
+ngx_http_cgi_timeout2_callback(ngx_event_t *ev) {
     ngx_http_cgi_ctx_t  *ctx = ev->data;
 
     ngx_log_error(NGX_LOG_INFO, ev->log, 0,
@@ -2582,7 +2624,7 @@ ngx_http_cgi_timeout2_handler(ngx_event_t *ev) {
 
 
 static void
-ngx_http_cgi_timeout_handler(ngx_event_t *ev) {
+ngx_http_cgi_timeout_callback(ngx_event_t *ev) {
     ngx_http_cgi_ctx_t  *ctx = ev->data;
 
     ngx_log_error(NGX_LOG_INFO, ev->log, 0,
@@ -2591,7 +2633,7 @@ ngx_http_cgi_timeout_handler(ngx_event_t *ev) {
     ngx_http_cgi_kill_process(ctx->pid, SIGTERM);
 
     if (ctx->conf->timeout && ctx->conf->timeout->t2 > 0) {
-        ev->handler = ngx_http_cgi_timeout2_handler;
+        ev->handler = ngx_http_cgi_timeout2_callback;
         ngx_add_timer(ev, ctx->conf->timeout->t2);
     }
 }
@@ -2669,7 +2711,7 @@ ngx_http_cgi_handler_real(ngx_http_cgi_ctx_t *ctx) {
             goto done;
         }
 
-        ctx->c_stdin->write->handler = ngx_http_cgi_stdin_handler;
+        ctx->c_stdin->write->handler = ngx_http_cgi_stdin_ready_callback;
         if (ngx_handle_write_event(ctx->c_stdin->write, 0) != NGX_OK) {
             rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
             goto done;
@@ -2687,7 +2729,7 @@ ngx_http_cgi_handler_real(ngx_http_cgi_ctx_t *ctx) {
             goto done;
         }
 
-        ctx->c_stdout->read->handler = ngx_http_cgi_stdout_handler;
+        ctx->c_stdout->read->handler = ngx_http_cgi_stdout_ready_callback;
         if (ngx_handle_read_event(ctx->c_stdout->read, 0) != NGX_OK) {
             rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
             goto done;
@@ -2705,7 +2747,7 @@ ngx_http_cgi_handler_real(ngx_http_cgi_ctx_t *ctx) {
             goto done;
         }
 
-        ctx->c_stderr->read->handler = ngx_http_cgi_stderr_handler;
+        ctx->c_stderr->read->handler = ngx_http_cgi_stderr_ready_callback;
         if (ngx_handle_read_event(ctx->c_stderr->read, 0) != NGX_OK) {
             rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
             goto done;
@@ -2716,10 +2758,10 @@ ngx_http_cgi_handler_real(ngx_http_cgi_ctx_t *ctx) {
     ctx->timer.log = ctx->r->connection->log;
     if (ctx->conf->timeout) {
         if (ctx->conf->timeout->t1 > 0) {
-            ctx->timer.handler = ngx_http_cgi_timeout_handler;
+            ctx->timer.handler = ngx_http_cgi_timeout_callback;
             ngx_add_timer(&ctx->timer, ctx->conf->timeout->t1);
         } else if (ctx->conf->timeout->t2 > 0) {
-            ctx->timer.handler = ngx_http_cgi_timeout2_handler;
+            ctx->timer.handler = ngx_http_cgi_timeout2_callback;
             ngx_add_timer(&ctx->timer, ctx->conf->timeout->t2);
         }
     }
@@ -2916,7 +2958,8 @@ ngx_http_cgi_handler_async(ngx_http_request_t *r) {
         goto done;
     }
 
-    r->read_event_handler = ngx_http_cgi_request_handler;
+    r->read_event_handler = ngx_http_cgi_conn_read_ready_callback;
+    r->write_event_handler = ngx_http_cgi_conn_write_ready_callback;
 
     if (ctx->conf->body_only) {
         r->headers_out.status = NGX_HTTP_OK;
