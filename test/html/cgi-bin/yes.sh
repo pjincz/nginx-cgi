@@ -1,13 +1,9 @@
-#!/bin/bash
+#!/bin/sh
 
 echo "Content-Type: text/plain"
 echo
 
-declare -A qs
-for kv in ${QUERY_STRING//&/ }; do
-    key=${kv%%=*}
-    val=${kv#*=}
-    qs["$key"]=$val
-done
+w=$(echo "$QUERY_STRING" | sed 's/&/\n/' | sed -n "s/^w=//p")
+n=$(echo "$QUERY_STRING" | sed 's/&/\n/' | sed -n "s/^n=//p")
 
-yes "${qs[w]:-yes}" | head -n "${qs[n]:-1000}"
+yes "${w:-yes}" | head -n "${n:-1000}"
