@@ -50,7 +50,7 @@ $t->run();
 ###############################################################################
 # basic tests
 
-my $url = "http://127.0.0.1:8080/cgi-bin/yes.sh?w=yes&n=20000000";
+my $url = "http://127.0.0.1:8080/cgi-bin/seq.sh?n=10000000";
 
 my $http = HTTP::Tiny->new;
 my $response = $http->get($url);
@@ -59,4 +59,4 @@ ok($response->{success});
 my $body = $response->{content};
 my $sha1 = sha1_hex($body);
 
-is($sha1, "ba086b2d0d62148d7a55c6936883d25399ea3881");
+is($sha1, "f4b366bec56a78cb2a689876e6515e4871b248ed");

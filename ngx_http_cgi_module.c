@@ -157,6 +157,7 @@ typedef struct ngx_http_cgi_ctx_s {
 
     ngx_flag_t                     has_body;
     ngx_chain_t                   *body_cache;  // body sending cache
+    ngx_flag_t                     body_cache_sending;
 
     ngx_event_t                    timer;
 } ngx_http_cgi_ctx_t;
@@ -2142,15 +2143,24 @@ ngx_http_cgi_write_body(ngx_http_cgi_ctx_t *ctx, ngx_flag_t finishing) {
     }
 
     if (ctx->body_cache) {
-        ctx->body_cache->buf->last_in_chain = 1;
-        ctx->body_cache->buf->last_buf = finishing;
-        for (it = ctx->body_cache; it; it = it->next) {
-            it->buf->flush = 1;
+        if (ctx->body_cache_sending) {
+            rc = ngx_http_send_special(ctx->r, NGX_HTTP_FLUSH);
+        } else {
+            ctx->body_cache->buf->last_in_chain = 1;
+            ctx->body_cache->buf->last_buf = finishing;
+            for (it = ctx->body_cache; it; it = it->next) {
+                it->buf->flush = 1;
+            }
+            rc = ngx_http_output_filter(ctx->r, ctx->body_cache);
         }
-        rc = ngx_http_output_filter(ctx->r, ctx->body_cache);
+
         if (rc == NGX_OK) {
+            ctx->body_cache_sending = 0;
+
             ctx->body_cache = _ngx_pfree_chain_node(
                 ctx->r->pool, ctx->body_cache);
+        } else if (rc == NGX_AGAIN) {
+            ctx->body_cache_sending = 1;
         }
     }
 
