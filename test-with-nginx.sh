@@ -46,6 +46,8 @@ if [ "$WITH_ASAN" = "1" ]; then
         CC_OPT="$CC_OPT  --param asan-stack=0"
     fi
 
+    NGINX_DIR="${NGINX_DIR}_with_asan"
+
     # nginx has odr violation problem, just ignore it
     # nginx has memory leaking problem, ignore it for now
     export ASAN_OPTIONS=detect_odr_violation=0,detect_leaks=0
