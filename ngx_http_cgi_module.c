@@ -2395,11 +2395,10 @@ ngx_http_cgi_stdout_handler(ngx_event_t *ev) {
     ngx_http_request_t *r = ctx->r;
 
     u_char buf[65536];
-    int total_read = 0, nread = 0;
     ngx_flag_t eof = 0;
 
     for (;;) {
-        nread = read(c->fd, buf, sizeof(buf));
+        int nread = read(c->fd, buf, sizeof(buf));
         if (nread > 0) {
             rc = ngx_http_cgi_add_output(ctx, buf, buf + nread);
             if (rc != NGX_OK) {
@@ -2407,13 +2406,8 @@ ngx_http_cgi_stdout_handler(ngx_event_t *ev) {
                     "ngx_http_cgi_add_output");
                 goto done;
             }
-            total_read += nread;
         } else if (nread == 0) {
-#if (NGX_SOLARIS)
-            // On Solaris, nread == 0 doesn't means eof
-#else
             eof = 1;
-#endif
             break;
         } else {
             if (ngx_errno == EAGAIN) {
@@ -2427,15 +2421,6 @@ ngx_http_cgi_stdout_handler(ngx_event_t *ev) {
             }
         }
     }
-
-#if (NGX_SOLARIS)
-    if (total_read == 0) {
-        eof = 1;
-    }
-#else
-    // Suppress compiler warnings
-    (void)total_read;
-#endif
 
     if (!eof) {
         rc = ngx_http_cgi_flush(ctx, 0);
@@ -2525,21 +2510,15 @@ ngx_http_cgi_stderr_handler(ngx_event_t *ev) {
     ngx_http_request_t *r = ctx->r;
 
     u_char buf[65536];
-    int total_read = 0, nread = 0;
     ngx_flag_t eof = 0;
 
     for (;;) {
-        nread = read(c->fd, buf, sizeof(buf));
+        int nread = read(c->fd, buf, sizeof(buf));
         if (nread > 0) {
             ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
                     "cgi stderr: %*s", nread, buf);
-            total_read += nread;
         } else if (nread == 0) {
-#if (NGX_SOLARIS)
-            // On Solaris, nread == 0 doesn't means eof
-#else
             eof = 1;
-#endif
             break;
         } else {
             if (ngx_errno == EAGAIN) {
@@ -2550,15 +2529,6 @@ ngx_http_cgi_stderr_handler(ngx_event_t *ev) {
             }
         }
     }
-
-#if (NGX_SOLARIS)
-    if (total_read == 0) {
-        eof = 1;
-    }
-#else
-    // Suppress compiler warnings
-    (void)total_read;
-#endif
 
     if (!eof) {
         ctx->c_stderr->read->ready = 0;
@@ -2603,8 +2573,12 @@ ngx_http_cgi_pipe_connection(ngx_http_cgi_ctx_t *ctx, int pipe[2], int end)
     ngx_log_t *log = ctx->r->connection->log;
 
     int fd = pipe[end];
-    if (ngx_nonblocking(fd) == -1) {
-        ngx_log_error(NGX_LOG_ERR, log, ngx_errno, "ngx_nonblocking");
+
+    // ngx_nonblocking prefers FIONBIO. It has different behaviour on some
+    // platforms. Let's use O_NONBLOCK directly here. It's more standard for
+    // POSIX platform.
+    if (fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK) == -1) {
+        ngx_log_error(NGX_LOG_ERR, log, ngx_errno, "F_SETFL");
         return NULL;
     }
 
