@@ -2068,7 +2068,7 @@ ngx_http_cgi_calc_content_length(ngx_http_cgi_ctx_t *ctx) {
     ngx_int_t    len = 0;
 
     for (it = ctx->body_cache; it; it = it->next) {
-        len += it->buf->end - it->buf->start;
+        len += ngx_buf_size(it->buf);
     }
 
     return len;
