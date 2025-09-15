@@ -1,3 +1,10 @@
+nginx-cgi (0.14) stable; urgency=medium
+
+  * Fixup: request failed when CGi script output faster than network transfer
+  * Fixup: memory issue in long-streaming
+
+ -- Chizhong Jin <pjincz@gmail.com>  Mon, 15 Sep 2025 21:23:20 +0800
+
 nginx-cgi (0.13) stable; urgency=medium
 
   * Allow `cgi pass` carries script argv.
