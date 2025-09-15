@@ -876,6 +876,12 @@ ngx_http_cgi_child_proc(
         closefrom(3);
     }
 
+    // nginx ignored signal SIGPIPE and SIGSYS, this may cause problems on
+    // some platform, let's restore them here.
+    // see: https://github.com/pjincz/nginx-cgi/issues/16
+    signal(SIGPIPE, SIG_DFL);
+    signal(SIGSYS, SIG_DFL);
+
     // exec to final binary
     if (execve(exec_path, cmd, env) == -1) {
         cpctx->err_msg = "exec";
