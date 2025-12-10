@@ -117,9 +117,73 @@ Now, try it:
 curl http://127.0.0.1/cgi-bin/hello.sh
 ```
 
-If you nothing wrong, you will get an output of `Hello CGI`.
+If nothing goes wrong, you will get an output of `Hello CGI`.
 
-## Build
+## Quick start (with Fedora 42+)
+
+Build and install:
+
+```sh
+# make a build directory
+mkdir _some_where_
+cd _some_where_
+
+# download the spec file from the repo
+wget https://github.com/pjincz/nginx-cgi/raw/refs/heads/main/fedora/nginx-cgi.spec
+
+# install dependency
+sudo dnf install gcc nginx-mod-devel
+
+# build rpm package
+mkdir -p rpmbuild/SOURCES
+rpmbuild -bb nginx-cgi.spec
+
+# install rpm package
+rpm -i RPMS/*/nginx-mod-http-cgi-*.rpm
+```
+
+Then enable cgi in nginx. Put following content to /etc/nginx/default.d/cgi.conf
+
+```text
+location /cgi-bin {
+    cgi on;
+}
+```
+
+The newly added section means, for all request under `/cgi-bin`, turns on cgi
+support. Now restart nginx:
+
+```sh
+sudo systemctl restart nginx
+```
+
+Then, save a simple CGi script to to /usr/share/nginx/html/cgi-bin/hello.sh
+
+```sh
+#!/bin/bash
+
+echo "Content-Type: text/plain"
+echo
+
+echo Hello CGI
+```
+
+Add x perm to cgi script:
+
+```sh
+chmod +x /usr/share/nginx/html/cgi-bin/hello.sh
+```
+
+Now, try it:
+
+```sh
+curl http://127.0.0.1/cgi-bin/hello.sh
+```
+
+If nothing goes wrong, you will get an output of `Hello CGI`.
+
+
+## Manually build project
 
 If you are using latest deb based system, such as Debian and Ubuntu, and not
 willing to debug the plugin, you can just following the `Quick start` to get a
