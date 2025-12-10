@@ -124,22 +124,21 @@ If nothing goes wrong, you will get an output of `Hello CGI`.
 Build and install:
 
 ```sh
-# make a build directory
-mkdir _some_where_
-cd _some_where_
+# install dependencies
+sudo dnf install rpmdev gcc nginx-mod-devel
+
+# initialize rpmbuild
+rpmdev-setuptree
+cd ~/rpmbuild
 
 # download the spec file from the repo
 wget https://github.com/pjincz/nginx-cgi/raw/refs/heads/main/fedora/nginx-cgi.spec
 
-# install dependency
-sudo dnf install gcc nginx-mod-devel
-
 # build rpm package
-mkdir -p rpmbuild/SOURCES
 rpmbuild -bb nginx-cgi.spec
 
 # install rpm package
-rpm -i RPMS/*/nginx-mod-http-cgi-*.rpm
+sudo dnf install RPMS/*/nginx-mod-http-cgi-*.rpm
 ```
 
 Then enable cgi in nginx. Put following content to /etc/nginx/default.d/cgi.conf
