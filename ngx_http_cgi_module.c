@@ -2554,8 +2554,8 @@ ngx_http_cgi_stdout_handler(ngx_event_t *ev) {
             } else {
                 rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
             }
-            ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
-                "ngx_http_cgi_deref_process, status = %d", status);
+            ngx_log_error(NGX_LOG_INFO, r->connection->log, ngx_errno,
+                "CGI process exit with non-zero code: %d", status);
             goto done;
         } else {
             // should not happen
