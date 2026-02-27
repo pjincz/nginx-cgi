@@ -41,9 +41,11 @@ I created a discord channel. If:
 
 Please join us: <https://discord.gg/EJSfqHHmaR>.
 
-## Pre-built Packages (Ubuntu / Debian)
+## Quick start
 
-Pre-built packages for this module are freely available from the GetPageSpeed repository:
+### Install pre-built package with Debian 12+, Ubuntu 20.04+
+
+Pre-built packages for this module are available from the GetPageSpeed repository:
 
 ```bash
 # Install the repository keyring
@@ -60,11 +62,17 @@ sudo apt-get update
 sudo apt-get install nginx nginx-module-cgi
 ```
 
-The module is automatically enabled after installation. Supported distributions include Debian 12/13 and Ubuntu 20.04/22.04/24.04 (both amd64 and arm64). See [the complete setup instructions](https://apt-nginx-extras.getpagespeed.com/apt-setup/).
+The module is automatically enabled after installation. Supported distributions
+include Debian 12/13 and Ubuntu 20.04/22.04/24.04 (both amd64 and arm64). See
+[the complete setup instructions](https://apt-nginx-extras.getpagespeed.com/apt-setup/).
 
-## Quick start (with Debian 12+, Ubuntu 24.04+)
+### Install pre-built package with Angie
 
-Build and install:
+If you are using Angie, the cgi plugin has already in Angie's official repo.
+Please have a look here:
+<https://en.angie.software/angie/docs/installation/oss_packages/#install-thirdpartymodules-oss>
+
+### Build project with Debian 12+, Ubuntu 24.04+
 
 ```sh
 # checkout source code
@@ -78,71 +86,7 @@ cd nginx-cgi
 dpkg -i ../libnginx-mod-http-cgi_*_amd64.deb
 ```
 
-Then enable cgi in nginx. If you have a newly installed nginx, you can find a
-default site at `/etc/nginx/sites-enabled/default`. The default one looks like
-this:
-
-```text
-server {
-    listen 80 default_server;
-    listen [::]:80 default_server;
-
-    root /var/www/html;
-
-    index index.html index.htm index.nginx-debian.html;
-
-    server_name _;
-
-    location / {
-        try_files $uri $uri/ =404;
-    }
-}
-```
-
-The default `root` points to `/var/www/html`, keep it as it as, and add
-following section after `location /` section.
-
-```text
-    location /cgi-bin {
-        cgi on;
-    }
-```
-
-The newly added section means, for all request under `/cgi-bin`, turns on cgi
-support. Now restart nginx:
-
-```sh
-systemctl restart nginx
-```
-
-Save following content to /var/www/html/cgi-bin/hello.sh
-
-```sh
-#!/bin/bash
-
-echo "Content-Type: text/plain"
-echo
-
-echo Hello CGI
-```
-
-Add x perm to cgi script:
-
-```sh
-chmod +x /var/www/html/cgi-bin/hello.sh
-```
-
-Now, try it:
-
-```sh
-curl http://127.0.0.1/cgi-bin/hello.sh
-```
-
-If nothing goes wrong, you will get an output of `Hello CGI`.
-
-## Quick start (with Fedora 42+)
-
-Build and install:
+### Build project with Fedora 42+
 
 ```sh
 # install dependencies
@@ -162,58 +106,7 @@ rpmbuild -bb nginx-cgi.spec
 sudo dnf install RPMS/*/nginx-mod-http-cgi-*.rpm
 ```
 
-Then enable cgi in nginx. Put following content to /etc/nginx/default.d/cgi.conf
-
-```text
-location /cgi-bin {
-    cgi on;
-}
-```
-
-The newly added section means, for all request under `/cgi-bin`, turns on cgi
-support. Now restart nginx:
-
-```sh
-sudo systemctl restart nginx
-```
-
-Then, save a simple CGi script to to /usr/share/nginx/html/cgi-bin/hello.sh
-
-```sh
-#!/bin/bash
-
-echo "Content-Type: text/plain"
-echo
-
-echo Hello CGI
-```
-
-Add x perm to cgi script:
-
-```sh
-chmod +x /usr/share/nginx/html/cgi-bin/hello.sh
-```
-
-Now, try it:
-
-```sh
-curl http://127.0.0.1/cgi-bin/hello.sh
-```
-
-If nothing goes wrong, you will get an output of `Hello CGI`.
-
-
-## Manually build project
-
-If you are using latest deb based system, such as Debian and Ubuntu, and not
-willing to debug the plugin, you can just following the `Quick start` to get a
-usable deb package.
-
-If you are using Angie, the cgi plugin has already in Angie's official repo.
-Please have a look here:
-<https://en.angie.software/angie/docs/installation/oss_packages/#install-thirdpartymodules-oss>
-
-Manual build guide:
+### Manually build project (for other OS/distributions or debugging)
 
 1. Checkout nginx and this plugin
 
@@ -243,6 +136,51 @@ Manual build guide:
 
 If everything is good, then you will find `ngx_http_cgi_module.so` under `objs`
 directory.
+
+### Hello CGI
+
+Normally, Nginx will automatically load modules in default module path (such as
+`/usr/lib/nginx/modules`). If you manually build the project or your nginx
+cannot find the module automatically, you need to manually load the module.
+In this case, add following statement to your nginx.conf's top level context:
+
+```
+load_module <dir-of-plugin>/ngx_http_cgi_module.so;
+```
+
+Then, enable cgi somewhere (inside server or location section). For example:
+
+```
+    location /cgi-bin {
+        cgi on;
+    }
+```
+
+After all, put following CGI script to your-document-root-dir/cgi-bin/hello.sh:
+
+```sh
+#!/bin/bash
+
+echo "Content-Type: text/plain"
+echo
+
+echo "Welcome to CGI world!"
+```
+
+Don't forget to add x-perm to CGI script:
+
+```sh
+chmod +x your-document-root-dir/cgi-bin/hello.sh
+```
+
+Restart nginx and try it:
+
+```sh
+systemctl restart nginx
+curl http://127.0.0.1/cgi-bin/hello.sh
+```
+
+If nothing goes wrong, you will find a welcome from CGI world. :D
 
 ## Usage
 
