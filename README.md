@@ -902,16 +902,23 @@ are not supported by this plugin now (Such as `PATH_TRANSLATED`,
 `REMOTE_IDENT`). But it's not recommanded, it may introduce confusing issues to
 your system.
 
-#### `cgi_stderr <path>`
+#### `cgi_stderr <off|info|warn|error|crit|alert|emerg|stderr>`
+#### `cgi_stderr file <path_to_file>`
 
-Redirect cgi stderr to giving file.
+By default, nginx-cgi grab cgi script's stderr output and dump it to nginx log
+with `warn` level.
+You can change the behaviour here.
 
-By default, nginx-cgi grab cgi script's stderr output and dump it to nginx log.
-But this action is somewhat expensive, because it need to create an extra
-connection to listen stderr output. If you want to avoid this, you can use this
-option to redirect cgi script's stderr output to a file. Or you can even discard
-all stderr output by redirect to `/dev/null`. Also you can use this to redirect
-all stderr output to nginx's stderr by set it as `/dev/stderr`.
+* off: fully discard the stderr output.
+
+* info, warn, error, crit, alert, emerg: redirect CGI stderr to nginx log with
+  giving level. Note: this option might be a little expensive, because it need
+  an extra pipe for each CGI process. If you mind this matter, you should avoid
+  this.
+
+* stderr: redirect CGI stderr to nginx process's stderr
+
+* file <path_to_file>: redirect CGI stderr to a file
 
 #### `cgi_rdns <on|off|double> [required]`
 

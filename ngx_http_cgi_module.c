@@ -16,7 +16,16 @@
 #define PIPE_WRITE_END     1
 
 #define CGI_STDERR_UNSET  -1
-#define CGI_STDERR_PIPE   -2
+#define CGI_STDERR_OFF    -2
+#define CGI_STDERR_STDERR  2
+#define CGI_STDERR_INFO   (NGX_LOG_INFO - 100)
+#define CGI_STDERR_WARN   (NGX_LOG_WARN - 100)  // default level
+#define CGI_STDERR_ERR    (NGX_LOG_ERR - 100)
+#define CGI_STDERR_CRIT   (NGX_LOG_CRIT - 100)
+#define CGI_STDERR_ALERT  (NGX_LOG_ALERT - 100)
+#define CGI_STDERR_EMERG  (NGX_LOG_EMERG - 100)
+#define CGI_STDERR_NEED_PIPE(x) (x < -10)
+#define CGI_STDERR_LOG_LEVEL(x) (x < -10 ? x + 100 : NGX_LOG_WARN)
 
 #define CGI_RDNS_OFF       0
 #define CGI_RDNS_ON        1
@@ -278,7 +287,7 @@ static ngx_command_t  ngx_http_cgi_commands[] = {
     // nginx's stderr by set it as `/dev/stderr`.
     {
         ngx_string("cgi_stderr"),
-        NGX_HTTP_LOC_CONF | NGX_HTTP_SRV_CONF | NGX_CONF_TAKE1,
+        NGX_HTTP_LOC_CONF | NGX_HTTP_SRV_CONF | NGX_CONF_TAKE12,
         ngx_http_cgi_set_stderr,
         NGX_HTTP_LOC_CONF_OFFSET,
         offsetof(ngx_http_cgi_loc_conf_t, cgi_stderr),
@@ -859,6 +868,8 @@ ngx_http_cgi_child_proc(
         dup2(ctx->conf->cgi_stderr, 2);
     } else if (ctx->pipe_stderr[PIPE_WRITE_END] >= 0) {
         dup2(ctx->pipe_stderr[PIPE_WRITE_END], 2);
+    } else {
+        dup2(open("/dev/null", O_WRONLY | O_APPEND), 2);
     }
 
     // close all fds >= 3 (or 4) to prevent inherit connection from nginx
@@ -1507,7 +1518,7 @@ ngx_http_cgi_spawn_cgi_process(ngx_http_cgi_ctx_t *ctx) {
         goto done;
     }
 
-    if (ctx->conf->cgi_stderr == CGI_STDERR_PIPE) {
+    if (CGI_STDERR_NEED_PIPE(ctx->conf->cgi_stderr)) {
         if (pipe(ctx->pipe_stderr) == -1) {
             ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno, "pipe");
             rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
@@ -2625,10 +2636,12 @@ ngx_http_cgi_stderr_handler(ngx_event_t *ev) {
 
     u_char buf[CGI_BUF_BLOCK_SIZE];
 
+    ngx_uint_t err_lvl = CGI_STDERR_LOG_LEVEL(ctx->conf->cgi_stderr);
+
     for (;;) {
         int nread = read(c->fd, buf, sizeof(buf));
         if (nread > 0) {
-            ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+            ngx_log_error(err_lvl, r->connection->log, 0,
                     "cgi stderr: %*s", nread, buf);
         } else if (nread == 0) {
             c->read->ready = 0;
@@ -3231,11 +3244,15 @@ ngx_http_cgi_set_stderr(ngx_conf_t *cf, ngx_command_t *cmd, void *c) {
         return "is duplicate";
     }
 
-    assert(cf->args->nelts == 2);
-    if (args[1].len == 0) {
-        conf->cgi_stderr = CGI_STDERR_PIPE;
-    } else {
-        fpath = _ngx_str_to_cstr(cf->pool, &args[1]);
+    if (cf->args->nelts < 2) {
+        return "too less option";
+    }
+
+    if (ngx_strcasecmp(args[1].data, (u_char *)"file") == 0) {
+        if (cf->args->nelts != 3) {
+            return "too less option";
+        }
+        fpath = _ngx_str_to_cstr(cf->pool, &args[2]);
         if (!fpath) {
             return "out of memory";
         }
@@ -3252,7 +3269,31 @@ ngx_http_cgi_set_stderr(ngx_conf_t *cf, ngx_command_t *cmd, void *c) {
         cln = ngx_pool_cleanup_add(cf->pool, 0);
         cln->data = (void*)(ngx_int_t)conf->cgi_stderr;
         cln->handler = ngx_http_cgi_close_fd;
+    } else {
+        if (cf->args->nelts != 2) {
+            return "too much option";
+        }
+        if (ngx_strcasecmp(args[1].data, (u_char *)"off") == 0) {
+            conf->cgi_stderr = CGI_STDERR_OFF;
+        } else if (ngx_strcasecmp(args[1].data, (u_char *)"info") == 0) {
+            conf->cgi_stderr = CGI_STDERR_INFO;
+        } else if (ngx_strcasecmp(args[1].data, (u_char *)"warn") == 0) {
+            conf->cgi_stderr = CGI_STDERR_WARN;
+        } else if (ngx_strcasecmp(args[1].data, (u_char *)"error") == 0) {
+            conf->cgi_stderr = CGI_STDERR_ERR;
+        } else if (ngx_strcasecmp(args[1].data, (u_char *)"crit") == 0) {
+            conf->cgi_stderr = CGI_STDERR_CRIT;
+        } else if (ngx_strcasecmp(args[1].data, (u_char *)"alert") == 0) {
+            conf->cgi_stderr = CGI_STDERR_ALERT;
+        } else if (ngx_strcasecmp(args[1].data, (u_char *)"emerg") == 0) {
+            conf->cgi_stderr = CGI_STDERR_EMERG;
+        } else if (ngx_strcasecmp(args[1].data, (u_char *)"stderr") == 0) {
+            conf->cgi_stderr = CGI_STDERR_STDERR;
+        } else {
+            return "bad option";
+        }
     }
+
 
     return NGX_CONF_OK;
 }
@@ -3442,7 +3483,7 @@ ngx_http_cgi_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
             "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
     ngx_conf_merge_value(conf->strict_mode, prev->strict_mode, 1);
     ngx_conf_merge_ptr_value(conf->interpreter, prev->interpreter, NULL);
-    ngx_conf_merge_value(conf->cgi_stderr, prev->cgi_stderr, CGI_STDERR_PIPE);
+    ngx_conf_merge_value(conf->cgi_stderr, prev->cgi_stderr, CGI_STDERR_WARN);
     ngx_conf_merge_value(conf->rdns, prev->rdns, CGI_RDNS_OFF);
     ngx_conf_merge_ptr_value(conf->ext_vars, prev->ext_vars, NULL);
     ngx_conf_merge_ptr_value(conf->timeout, prev->timeout, NULL);

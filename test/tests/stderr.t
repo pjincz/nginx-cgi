@@ -13,13 +13,26 @@ use Test::Nginx;
 select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
-my $t = Test::Nginx->new()->plan(5);
+my $t = Test::Nginx->new()->plan(21);
 ok($t->has_module('cgi'), 'has cgi module');
+
+sub truncate_file {
+    my ($t, $fname) = @_;
+    open my $fh, '>', "$t->{_testdir}/$fname";
+    close $fh;
+}
 
 ###############################################################################
 
-$t->write_file_expand('nginx.conf', <<EOF);
+sub run_test {
+    my ($t, $opt) = @_;
 
+    my $opt_line = '';
+    if ($opt ne '') {
+        $opt_line = "cgi_stderr $opt;";
+    }
+
+    $t->write_file_expand('nginx.conf', <<EOF);
 %%TEST_GLOBALS%%
 
 daemon off;
@@ -36,21 +49,52 @@ http {
 
         location /cgi-bin {
             cgi on;
-            cgi_stderr $t->{_testdir}/cgierr.log;
+            $opt_line
         }
     }
 }
-
 EOF
 
-$t->run();
+    # truncate log before each run, to avoid pollution across tests 
+    truncate_file($t, 'error.log');
 
-like(http_get('/cgi-bin/stderr.sh?test1'), qr/okay/, 'write log 1');
-like(http_get('/cgi-bin/stderr.sh?test2'), qr/okay/, 'write log 2');
+    $t->run();
 
-open my $fh, '<', "$t->{_testdir}/cgierr.log" or die "Cannot open file: $!";
-my $cgierr = do { local $/; <$fh> };
-close $fh;
+    like(http_get('/cgi-bin/stderr.sh'), qr/okay/, 'call stderr.sh');
 
-like($cgierr, qr/test1/, 'test1');
-like($cgierr, qr/test2/, 'test2');
+    $t->stop();
+}
+
+run_test($t, '');
+like($t->read_file('error.log'), qr/\[warn\].*a_magic_string/);
+
+run_test($t, 'off');
+unlike($t->read_file('error.log'), qr/a_magic_string/);
+
+run_test($t, 'info');
+like($t->read_file('error.log'), qr/\[info\].*a_magic_string/);
+
+run_test($t, 'warn');
+like($t->read_file('error.log'), qr/\[warn\].*a_magic_string/);
+
+run_test($t, 'error');
+like($t->read_file('error.log'), qr/\[error\].*a_magic_string/);
+
+run_test($t, 'crit');
+like($t->read_file('error.log'), qr/\[crit\].*a_magic_string/);
+
+run_test($t, 'alert');
+like($t->read_file('error.log'), qr/\[alert\].*a_magic_string/);
+
+run_test($t, 'emerg');
+like($t->read_file('error.log'), qr/\[emerg\].*a_magic_string/);
+
+run_test($t, 'stderr');
+like($t->read_file('error.log'), qr/^a_magic_string$/m);
+
+run_test($t, "file $t->{_testdir}/cgierr.log");
+like($t->read_file('cgierr.log'), qr/a_magic_string/);
+
+# this test set may generate log with level >= alert, this will cause an error
+# from nginx test framework, just clean the log to prevent it
+truncate_file($t, 'error.log');
