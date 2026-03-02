@@ -41,6 +41,26 @@ I created a discord channel. If:
 
 Please join us: <https://discord.gg/EJSfqHHmaR>.
 
+## Benchmark
+
+CGI is not as slow as people normally think.
+In reality, its main limitations are process overhead and latency variability --
+not that it can only handle a few requests per minute.
+
+I did a simple test.
+
+Test environment:
+
+- Machine: low-cost ($5/month) Vultr instance (1 shared vCPU ~2.3GHz, 1GB RAM)
+- OS: Debian 12
+- Test command for CGI: `ab -n 1000 -c 100 127.0.0.1/cgi-bin/hello.sh`
+- Test command for plain text: `ab -n 1000 -c 100 127.0.0.1/hello.txt`
+
+Results:
+
+- `hello.sh`: 1007 req/s
+- `hello.txt`: 4891 req/s
+
 ## Quick start
 
 ### Install pre-built package with Debian 12+, Ubuntu 20.04+
