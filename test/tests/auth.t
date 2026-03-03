@@ -13,7 +13,7 @@ use Test::Nginx;
 select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
-my $t = Test::Nginx->new()->plan(4);
+my $t = Test::Nginx->new()->plan(6);
 ok($t->has_module('cgi'), 'has cgi module');
 
 ###############################################################################
@@ -41,6 +41,7 @@ http {
             cgi on;
             cgi_set_var AUTH_TYPE "Basic";
             cgi_set_var REMOTE_USER "$remote_user";
+            cgi_set_var MY_AUTHORIZATION "$http_authorization";
         }
     }
 }
@@ -64,6 +65,8 @@ Authorization: Basic YWFhOmJiYg==
 EOF
 like($r, qr/REMOTE_USER=aaa/m, 'REMOTE_USER');
 like($r, qr/AUTH_TYPE=Basic/m, 'AUTH_TYPE');
+unlike($r, qr/HTTP_AUTHORIZATION/m, 'no HTTP_AUTHORIZATION');
+like($r, qr/MY_AUTHORIZATION=Basic YWFhOmJiYg==/m, 'MY_AUTHORIZATION');
 
 
 # bad password

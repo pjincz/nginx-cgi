@@ -987,15 +987,12 @@ those variables can be overrided by `cgi_set_var` if you really want to.
 
 * `AUTH_TYPE`, `REMOTE_USER` (rfc3875 standard)
 
-If cgi script is behind an authorization module (such as
-`ngx_http_auth_basic_module`), and the authorization is succeed, the value is
-set to auth type (such as `Basic`) and authorized user.
+Deprecated since v0.15 for security reasons. See [issue
+#22](https://github.com/pjincz/nginx-cgi/issues/22) for details and workarounds.
 
-If no authorization module enabled, no matter client passes autoriazation header
-or not. Those 2 fields are not present.
-
-`Authorization` header is not visible in cgi script for security reason. If you
-really want to do authorization in CGI script, try `cgi_set_var`.
+Also, `Authorization` header is not visible by default in cgi script for
+security reasons too. If you want to access authorization header in CGI script,
+try `cgi_set_var HTTP_AUTHORIZATION $http_authorization`.
 
 * `CONTENT_LENGTH`, `CONTENT_TYPE` (rfc3875 standard)
 
