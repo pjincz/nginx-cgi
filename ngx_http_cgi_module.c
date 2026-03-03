@@ -1397,22 +1397,24 @@ ngx_http_cgi_prepare_env(ngx_http_cgi_ctx_t *ctx) {
         r->uri = orig_uri;
     }
 
-    // this field appears only if an auth module has been setup, and runs before
-    // cgi module. that's good, it has the same behaviour with apache2.
-    if (ctx->r->headers_in.user.len) {
-        _add_env_nstr(ctx, "REMOTE_USER", &ctx->r->headers_in.user);
+    // deprcated for security reason
+    // https://github.com/pjincz/nginx-cgi/issues/22
+    // // this field appears only if an auth module has been setup, and runs before
+    // // cgi module. that's good, it has the same behaviour with apache2.
+    // if (ctx->r->headers_in.user.len) {
+    //     _add_env_nstr(ctx, "REMOTE_USER", &ctx->r->headers_in.user);
 
-        if (ctx->r->headers_in.authorization) {
-            ngx_str_t auth_type = ctx->r->headers_in.authorization->value;
-            for (i = 0; i < auth_type.len; ++i) {
-                if (auth_type.data[i] == ' ') {
-                    auth_type.len = i;
-                    break;
-                }
-            }
-            _add_env_nstr(ctx, "AUTH_TYPE", &auth_type);
-        }
-    }
+    //     if (ctx->r->headers_in.authorization) {
+    //         ngx_str_t auth_type = ctx->r->headers_in.authorization->value;
+    //         for (i = 0; i < auth_type.len; ++i) {
+    //             if (auth_type.data[i] == ' ') {
+    //                 auth_type.len = i;
+    //                 break;
+    //             }
+    //         }
+    //         _add_env_nstr(ctx, "AUTH_TYPE", &auth_type);
+    //     }
+    // }
 
     // other rfc3875 vars:
     //   REMOTE_IDENT: no plan to support, due to security reason

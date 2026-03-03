@@ -39,6 +39,8 @@ http {
 
         location /cgi-bin {
             cgi on;
+            cgi_set_var AUTH_TYPE "Basic";
+            cgi_set_var REMOTE_USER "$remote_user";
         }
     }
 }
