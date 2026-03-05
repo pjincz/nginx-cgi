@@ -1,3 +1,11 @@
+nginx-cgi (0.15) stable; urgency=medium
+
+  * Allow users to control CGI stderr log level
+  * Deprecate `REMOTE_USER` and `AUTH_TYPE` vars
+
+ -- Chizhong Jin <pjincz@gmail.com>  Thu, 05 Mar 2026 15:14:35 +0800
+
+
 nginx-cgi (0.14.1) stable; urgency=medium
 
   * Fixed a hanging problem on OpenBSD
