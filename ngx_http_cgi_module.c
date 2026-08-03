@@ -3383,13 +3383,14 @@ ngx_http_cgi_add_var(ngx_conf_t *cf, ngx_command_t *cmd, void *c) {
     ext_var->name = args[1];
 
     combine.len = args[1].len + 1 + args[2].len;
-    combine.data = ngx_palloc(cf->pool, combine.len);
+    combine.data = ngx_palloc(cf->pool, combine.len + 1);
     if (!combine.data) {
         return NGX_CONF_ERROR;
     }
     ngx_memcpy(combine.data, args[1].data, args[1].len);
     combine.data[args[1].len] = '=';
     ngx_memcpy(combine.data + args[1].len + 1, args[2].data, args[2].len);
+    combine.data[combine.len] = 0;
 
     ngx_memzero(&ccv, sizeof(ccv));
     ccv.cf = cf;
