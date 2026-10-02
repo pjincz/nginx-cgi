@@ -3388,6 +3388,10 @@ ngx_http_cgi_add_var(ngx_conf_t *cf, ngx_command_t *cmd, void *c) {
     ext_var->name = args[1];
 
     combine.len = args[1].len + 1 + args[2].len;
+    // nginx's ngx_http_compile_complex_value has any issue, when no $ found
+    // in the expression, it will return the input string directly, and fully
+    // ignores the ccv.zero flag.
+    // See pull #24 for more details
     combine.data = ngx_palloc(cf->pool, combine.len + 1);
     if (!combine.data) {
         return NGX_CONF_ERROR;
