@@ -2240,6 +2240,11 @@ ngx_http_cgi_stdin_handler(ngx_event_t *ev) {
         // still more data need to be wrote
         ctx->c_stdin->write->ready = 0;
         ngx_handle_write_event(ctx->c_stdin->write, 0);
+    } else if (ctx->c_stdin && r->reading_body
+               && r->connection->read->ready) {
+        // Current bufs are consumed, but the client socket is still readable.
+        // Resume body reading without waiting for another read edge.
+        ngx_post_event(r->connection->read, &ngx_posted_events);
     }
 
 done:
