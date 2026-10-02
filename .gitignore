@@ -1,4 +1,5 @@
 # building dir
+/build/
 /obj-*-linux-gnu/
 
 # debian build temp files

@@ -4,7 +4,7 @@ set -eu
 
 THIS_DIR="$(readlink -f "$(dirname "$0")")"
 NGINX_REPO="${NGINX_REPO:-https://github.com/nginx/nginx}"
-NGINX_DIR="${NGINX_DIR:-$THIS_DIR/../nginx}"
+NGINX_DIR="${NGINX_DIR:-$THIS_DIR/build/nginx}"
 NGINX_BIN="${NGINX_BIN:-nginx}"
 CFG_SCRIPT="${CFG_SCRIPT:-./auto/configure}"
 
@@ -57,6 +57,7 @@ else
 fi
 
 if [ ! -d "$NGINX_DIR" ]; then
+    mkdir -p "$(dirname "$NGINX_DIR")"
     git clone --depth=1 "$NGINX_REPO" "$NGINX_DIR"
 fi
 
