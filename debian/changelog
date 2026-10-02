@@ -1,3 +1,11 @@
+nginx-cgi (0.15.2) stable; urgency=medium
+
+  * Fix CGI hangs when the request body buffer fills up.
+  * Fix missing null termination in constant cgi_set_var values.
+
+ -- Chizhong Jin <pjincz@gmail.com>  Fri, 02 Oct 2026 16:41:18 +0800
+
+
 nginx-cgi (0.15) stable; urgency=medium
 
   * Allow users to control CGI stderr log level

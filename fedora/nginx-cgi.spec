@@ -5,7 +5,7 @@
 %global source_date_epoch_from_changelog 0
 
 Name:           nginx-mod-http-cgi
-Version:        0.14.1
+Version:        0.15.2
 Release:        1
 Summary:        CGI support for Nginx
 
