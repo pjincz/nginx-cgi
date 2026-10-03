@@ -37,7 +37,7 @@ fi
 WITH_ASAN="${WITH_ASAN:-$SYSTEM_SUPPORT_ASAN}"
 
 if [ "$WITH_ASAN" = "1" ]; then
-    CC_OPT="-O0 -DNGX_DEBUG_PALLOC -DNGX_DEBUG_MALLOC -fsanitize=address,undefined"
+    CC_OPT="-O0 -fsanitize=address,undefined"
     LD_OPT="-fsanitize=address,undefined"
 
     if cc -v 2>&1 | grep -q gcc; then
